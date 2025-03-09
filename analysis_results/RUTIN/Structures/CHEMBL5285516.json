@@ -1,0 +1,11 @@
+{
+  "ChEMBL ID": "CHEMBL5285516",
+  "Molecule Name": "CHEMBL5285516",
+  "SMILES": "C[C@@H]1[C@@H](O)[C@@H](O)[C@H](OC[C@H]2O[C@@H](Oc3c(-c4ccc(O)c(O)c4)oc4cc(O)cc(O)c4c3=O)[C@H](O)[C@@H](O)[C@@H]2O)O[C@H]1C",
+  "InChI": "InChI=1S/C28H32O15/c1-9-10(2)40-27(23(37)19(9)33)39-8-17-20(34)22(36)24(38)28(42-17)43-26-21(35)18-15(32)6-12(29)7-16(18)41-25(26)11-3-4-13(30)14(31)5-11/h3-7,9-10,17,19-20,22-24,27-34,36-38H,8H2,1-2H3/t9-,10-,17+,19+,20+,22-,23+,24+,27+,28-/m0/s1",
+  "InChIKey": "IVRKQZZEDIHDRM-QGXLWZBFSA-N",
+  "Formula": "C28H32O15",
+  "Exact Mass": 608.1741203239999,
+  "2D_Image": "2D/CHEMBL5285516.png",
+  "3D_Model": "3D/CHEMBL5285516.pdb"
+}

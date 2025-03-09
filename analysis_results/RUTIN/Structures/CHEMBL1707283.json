@@ -1,0 +1,11 @@
+{
+  "ChEMBL ID": "CHEMBL1707283",
+  "Molecule Name": "CHEMBL1707283",
+  "SMILES": "C[C@@H]1O[C@@H](Oc2c(-c3ccc(O)c(O)c3)oc3cc(O)cc(O)c3c2=O)[C@H](O)[C@H](O)[C@H]1O.O",
+  "InChI": "InChI=1S/C21H20O11.H2O/c1-7-15(26)17(28)18(29)21(30-7)32-20-16(27)14-12(25)5-9(22)6-13(14)31-19(20)8-2-3-10(23)11(24)4-8;/h2-7,15,17-18,21-26,28-29H,1H3;1H2/t7-,15-,17+,18+,21-;/m0./s1",
+  "InChIKey": "UGZLJOKGLBVBHF-IKGPWECESA-N",
+  "Formula": "C21H22O12",
+  "Exact Mass": 466.11112614399985,
+  "2D_Image": "2D/CHEMBL1707283.png",
+  "3D_Model": "3D/CHEMBL1707283.pdb"
+}

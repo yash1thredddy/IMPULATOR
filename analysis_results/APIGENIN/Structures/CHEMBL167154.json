@@ -1,0 +1,11 @@
+{
+  "ChEMBL ID": "CHEMBL167154",
+  "Molecule Name": "CHEMBL167154",
+  "SMILES": "Nc1ccc(-c2cc(=O)c3c(O)cc(O)cc3o2)cc1",
+  "InChI": "InChI=1S/C15H11NO4/c16-9-3-1-8(2-4-9)13-7-12(19)15-11(18)5-10(17)6-14(15)20-13/h1-7,17-18H,16H2",
+  "InChIKey": "JHTPFKLMWLHCND-UHFFFAOYSA-N",
+  "Formula": "C15H11NO4",
+  "Exact Mass": 269.068807832,
+  "2D_Image": "2D/CHEMBL167154.png",
+  "3D_Model": "3D/CHEMBL167154.pdb"
+}

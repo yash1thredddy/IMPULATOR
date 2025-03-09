@@ -1,0 +1,11 @@
+{
+  "ChEMBL ID": "CHEMBL4087126",
+  "Molecule Name": "CHEMBL4087126",
+  "SMILES": "O=c1cc(-c2ccc(-c3ccccc3)cc2)oc2cc(O)cc(O)c12",
+  "InChI": "InChI=1S/C21H14O4/c22-16-10-17(23)21-18(24)12-19(25-20(21)11-16)15-8-6-14(7-9-15)13-4-2-1-3-5-13/h1-12,22-23H",
+  "InChIKey": "CKJVGRBXUYGKBA-UHFFFAOYSA-N",
+  "Formula": "C21H14O4",
+  "Exact Mass": 330.08920892799995,
+  "2D_Image": "2D/CHEMBL4087126.png",
+  "3D_Model": "3D/CHEMBL4087126.pdb"
+}

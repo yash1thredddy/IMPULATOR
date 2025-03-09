@@ -1,0 +1,11 @@
+{
+  "ChEMBL ID": "CHEMBL1822222",
+  "Molecule Name": "CHEMBL1822222",
+  "SMILES": "O=c1cc(-c2ccc(I)cc2)oc2cc(O)cc(O)c12",
+  "InChI": "InChI=1S/C15H9IO4/c16-9-3-1-8(2-4-9)13-7-12(19)15-11(18)5-10(17)6-14(15)20-13/h1-7,17-18H",
+  "InChIKey": "NAMLIVNJQKOMQA-UHFFFAOYSA-N",
+  "Formula": "C15H9IO4",
+  "Exact Mass": 379.954556768,
+  "2D_Image": "2D/CHEMBL1822222.png",
+  "3D_Model": "3D/CHEMBL1822222.pdb"
+}

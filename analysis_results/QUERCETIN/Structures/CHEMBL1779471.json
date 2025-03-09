@@ -1,0 +1,11 @@
+{
+  "ChEMBL ID": "CHEMBL1779471",
+  "Molecule Name": "CHEMBL1779471",
+  "SMILES": "O=c1c(O)c(-c2ccc(O)c(-c3cc(-c4oc5cc(O)cc(O)c5c(=O)c4O)ccc3O)c2)oc2cc(O)cc(O)c12",
+  "InChI": "InChI=1S/C30H18O12/c31-13-7-19(35)23-21(9-13)41-29(27(39)25(23)37)11-1-3-17(33)15(5-11)16-6-12(2-4-18(16)34)30-28(40)26(38)24-20(36)8-14(32)10-22(24)42-30/h1-10,31-36,39-40H",
+  "InChIKey": "IXCLTWQBCMHOFP-UHFFFAOYSA-N",
+  "Formula": "C30H18O12",
+  "Exact Mass": 570.0798260159999,
+  "2D_Image": "2D/CHEMBL1779471.png",
+  "3D_Model": "3D/CHEMBL1779471.pdb"
+}

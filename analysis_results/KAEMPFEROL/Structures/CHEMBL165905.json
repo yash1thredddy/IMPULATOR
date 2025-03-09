@@ -1,0 +1,11 @@
+{
+  "ChEMBL ID": "CHEMBL165905",
+  "Molecule Name": "CHEMBL165905",
+  "SMILES": "O=c1c(O)c(-c2ccc(F)cc2)oc2cc(O)cc(O)c12",
+  "InChI": "InChI=1S/C15H9FO5/c16-8-3-1-7(2-4-8)15-14(20)13(19)12-10(18)5-9(17)6-11(12)21-15/h1-6,17-18,20H",
+  "InChIKey": "ARXMHGNBODSKBL-UHFFFAOYSA-N",
+  "Formula": "C15H9FO5",
+  "Exact Mass": 288.043401608,
+  "2D_Image": "2D/CHEMBL165905.png",
+  "3D_Model": "3D/CHEMBL165905.pdb"
+}
