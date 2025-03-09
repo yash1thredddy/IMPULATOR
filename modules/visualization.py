@@ -283,8 +283,8 @@ def plot_activity_visualizations(df_results: pd.DataFrame, activity_folder: str)
             # Create the plot
             psaomw_qed_fig = px.scatter(
                 df_plot.dropna(subset=['PSAoMW', 'QED']),
-                x='PSAoMW',
-                y='QED',
+                x='QED',
+                y='PSAoMW',
                 color='Activity Type',
                 hover_name='ChEMBL ID',
                 hover_data=['Molecule Name', 'Activity (nM)', 'TPSA', 'Molecular Weight'],
@@ -297,13 +297,15 @@ def plot_activity_visualizations(df_results: pd.DataFrame, activity_folder: str)
                 template='plotly_white'
             )
             
-            psaomw_qed_fig.write_html(os.path.join(activity_folder, 'psaomw_vs_qed.html'))
+            psaomw_qed_fig.write_html(os.path.join(activity_folder, 'PSAoMW_vs_QED.html'))
             psaomw_qed_fig_json = psaomw_qed_fig.to_json()
-            with open(os.path.join(activity_folder, 'psaomw_vs_qed.json'), 'w') as f:
+            with open(os.path.join(activity_folder, 'PSAoMW_vs_QED.json'), 'w') as f:
                 f.write(psaomw_qed_fig_json)
     
     except Exception as e:
         logger.error(f"Error generating activity visualizations: {str(e)}")
+
+# Fix for the plot_property_visualizations function in visualization.py
 
 def plot_property_visualizations(df_results: pd.DataFrame, sei_folder: str, bei_folder: str) -> None:
     """
@@ -322,9 +324,17 @@ def plot_property_visualizations(df_results: pd.DataFrame, sei_folder: str, bei_
             axis=1
         )
         
-        # Function to create clustered box plots
-        def create_clustered_boxplots(df, value_col, folder, title_prefix):
-            """Create box plots grouped in clusters of 5 compounds"""
+        # Function to create clustered box plots - with proper unique data points
+        def create_clustered_boxplots(df, metrics, folder, title_prefix):
+            """
+            Create box plots grouped in clusters of 5 compounds
+            
+            Args:
+                df: DataFrame with data
+                metrics: List of metrics to create plots for (e.g. ['SEI', 'NSEI'])
+                folder: Output folder
+                title_prefix: Prefix for plot titles
+            """
             # Get unique compounds
             unique_chembl_ids = df['ChEMBL ID'].unique()
             
@@ -336,92 +346,129 @@ def plot_property_visualizations(df_results: pd.DataFrame, sei_folder: str, bei_
             cluster_size = 5
             compound_clusters = [unique_chembl_ids[i:i+cluster_size] for i in range(0, len(unique_chembl_ids), cluster_size)]
             
-            # Create a box plot for each cluster
-            for i, cluster in enumerate(compound_clusters):
-                # Filter data for this cluster
-                cluster_data = df[df['ChEMBL ID'].isin(cluster)]
+            # Process each metric
+            for metric in metrics:
+                # Skip if the metric is not in the data
+                if metric not in df.columns:
+                    logger.warning(f"Metric {metric} not found in DataFrame")
+                    continue
                 
-                # Create boxplot
-                fig = px.box(
-                    cluster_data,
-                    x='ChEMBL ID',  # Use ChEMBL ID for x-axis
-                    y=value_col,
-                    color='ChEMBL ID',  # Use ChEMBL ID for color coding
-                    points='all',
-                    hover_data=['Molecule Name', 'Activity Type', 'Activity (nM)'],
-                    title=f'{title_prefix} (Group {i+1} of {len(compound_clusters)})',
-                    labels={value_col: value_col, 'ChEMBL ID': 'Compound'},
-                    height=600
-                )
+                # Get valid data for this metric
+                valid_data = df.dropna(subset=[metric]).copy()
+                if valid_data.empty:
+                    logger.warning(f"No valid data for {metric}")
+                    continue
                 
-                # Update the legend to use DisplayName
-                for trace in fig.data:
-                    chembl_id = trace.name
-                    if chembl_id in cluster_data['ChEMBL ID'].values:
-                        display_name = cluster_data[cluster_data['ChEMBL ID'] == chembl_id]['DisplayName'].iloc[0]
-                        trace.name = display_name
+                metric_title = {
+                    'SEI': 'Surface Efficiency Index',
+                    'NSEI': 'Normalized Surface Efficiency Index',
+                    'BEI': 'Binding Efficiency Index',
+                    'nBEI': 'Normalized Binding Efficiency Index'
+                }.get(metric, metric)
                 
-                fig.update_layout(
-                    template='plotly_white',
-                    xaxis_tickangle=-45,
-                    legend_title_text='Compound'
-                )
-                
-                # Add navigation info
-                if len(compound_clusters) > 1:
-                    prev_group = i - 1 if i > 0 else len(compound_clusters) - 1
-                    next_group = i + 1 if i < len(compound_clusters) - 1 else 0
-                    nav_text = f"◀ Group {prev_group+1} | Group {next_group+1} ▶"
+                # Create a box plot for each cluster
+                for i, cluster in enumerate(compound_clusters):
+                    # Filter data for this cluster
+                    cluster_data = valid_data[valid_data['ChEMBL ID'].isin(cluster)]
                     
-                    fig.add_annotation(
-                        text=nav_text,
-                        xref="paper", yref="paper",
-                        x=0.5, y=1.05,
-                        showarrow=False,
-                        font=dict(size=12)
+                    # Skip if no data for this cluster
+                    if cluster_data.empty:
+                        continue
+                    
+                    # Process each unique ChEMBL ID to avoid duplicates
+                    plot_data = []
+                    for chembl_id in cluster:
+                        compound_data = cluster_data[cluster_data['ChEMBL ID'] == chembl_id]
+                        if not compound_data.empty:
+                            # Use the first occurrence for display name
+                            display_name = compound_data['DisplayName'].iloc[0]
+                            
+                            # Add each data point with needed metadata
+                            for _, row in compound_data.iterrows():
+                                plot_data.append({
+                                    'ChEMBL ID': chembl_id,
+                                    'DisplayName': display_name,
+                                    'Value': row[metric],
+                                    'Metric': metric,
+                                    'Molecule Name': row['Molecule Name'],
+                                    'Activity Type': row.get('Activity Type', 'Unknown'),
+                                    'Activity (nM)': row.get('Activity (nM)', float('nan'))
+                                })
+                    
+                    # Skip if no valid data for plotting
+                    if not plot_data:
+                        continue
+                    
+                    # Convert to DataFrame
+                    plot_df = pd.DataFrame(plot_data)
+                    
+                    # Create boxplot
+                    fig = px.box(
+                        plot_df,
+                        x='ChEMBL ID',
+                        y='Value',
+                        color='ChEMBL ID',
+                        points='all',
+                        hover_data=['Molecule Name', 'Activity Type', 'Activity (nM)'],
+                        title=f'{metric_title} Distribution (Group {i+1} of {len(compound_clusters)})',
+                        labels={'Value': metric, 'ChEMBL ID': 'Compound'},
+                        height=600
                     )
-                
-                # Save files
-                html_path = os.path.join(folder, f'{value_col.lower()}_boxplot_group{i+1}.html')
-                fig.write_html(html_path)
-                
-                json_path = os.path.join(folder, f'{value_col.lower()}_boxplot_group{i+1}.json')
-                fig_json = fig.to_json()
-                with open(json_path, 'w') as f:
-                    f.write(fig_json)
+                    
+                    # Update the legend to use DisplayName
+                    for trace in fig.data:
+                        chembl_id = trace.name
+                        display_names = plot_df[plot_df['ChEMBL ID'] == chembl_id]['DisplayName'].unique()
+                        if len(display_names) > 0:
+                            trace.name = display_names[0]
+                    
+                    fig.update_layout(
+                        template='plotly_white',
+                        xaxis_tickangle=-45,
+                        legend_title_text='Compound'
+                    )
+                    
+                    # Add navigation info
+                    if len(compound_clusters) > 1:
+                        prev_group = i - 1 if i > 0 else len(compound_clusters) - 1
+                        next_group = i + 1 if i < len(compound_clusters) - 1 else 0
+                        nav_text = f"◀ Group {prev_group+1} | Group {next_group+1} ▶"
+                        
+                        fig.add_annotation(
+                            text=nav_text,
+                            xref="paper", yref="paper",
+                            x=0.5, y=1.05,
+                            showarrow=False,
+                            font=dict(size=12)
+                        )
+                    
+                    # Save files
+                    metric_lower = metric.lower()
+                    html_path = os.path.join(folder, f'{metric_lower}_boxplot_group{i+1}.html')
+                    fig.write_html(html_path)
+                    
+                    json_path = os.path.join(folder, f'{metric_lower}_boxplot_group{i+1}.json')
+                    fig_json = fig.to_json()
+                    with open(json_path, 'w') as f:
+                        f.write(fig_json)
         
-        # Create SEI boxplots
-        if 'SEI' in df_results.columns:
-            valid_sei_data = df_results.dropna(subset=['SEI']).copy()
-            if not valid_sei_data.empty:
-                create_clustered_boxplots(
-                    valid_sei_data, 
-                    'SEI', 
-                    sei_folder, 
-                    'Surface Efficiency Index Distribution'
-                )
+        # Create SEI/NSEI boxplots
+        if any(col in df_results.columns for col in ['SEI', 'NSEI']):
+            create_clustered_boxplots(
+                df_results, 
+                ['SEI', 'NSEI'], 
+                sei_folder, 
+                'Surface Efficiency Index'
+            )
         
-        # Create NSEI boxplots
-        if 'NSEI' in df_results.columns:
-            valid_nsei_data = df_results.dropna(subset=['NSEI']).copy()
-            if not valid_nsei_data.empty:
-                create_clustered_boxplots(
-                    valid_nsei_data, 
-                    'NSEI', 
-                    sei_folder, 
-                    'Normalized Surface Efficiency Index Distribution'
-                )
-        
-        # Create BEI boxplots
-        if 'BEI' in df_results.columns:
-            valid_bei_data = df_results.dropna(subset=['BEI']).copy()
-            if not valid_bei_data.empty:
-                create_clustered_boxplots(
-                    valid_bei_data, 
-                    'BEI', 
-                    bei_folder, 
-                    'Binding Efficiency Index Distribution'
-                )
+        # Create BEI/nBEI boxplots
+        if any(col in df_results.columns for col in ['BEI', 'nBEI']):
+            create_clustered_boxplots(
+                df_results, 
+                ['BEI', 'nBEI'], 
+                bei_folder, 
+                'Binding Efficiency Index'
+            )
     
     except Exception as e:
         logger.error(f"Error generating property visualizations: {str(e)}")
@@ -551,9 +598,11 @@ def display_interactive_plot(plot_path: str) -> None:
 
 # In visualization.py, modify the show_interactive_plots function:
 
+# Fix for the show_interactive_plots function to replace st.experimental_rerun
 def show_interactive_plots(folder_path: str, plot_type: str) -> None:
     """
     Display interactive plots with navigation controls and error handling.
+    Includes toggle functionality for SEI/NSEI and BEI/nBEI metrics.
     
     Args:
         folder_path: Path to folder containing plots
@@ -580,6 +629,37 @@ def show_interactive_plots(folder_path: str, plot_type: str) -> None:
             plot_files = [f for f in expected_files if os.path.exists(f["path"])]
             state_key = "scatter_plot_index"
             
+            # Display plots
+            if plot_files:
+                # Initialize state if not set
+                if state_key not in st.session_state:
+                    st.session_state[state_key] = 0
+                
+                # Ensure the index is within bounds
+                if st.session_state[state_key] >= len(plot_files):
+                    st.session_state[state_key] = 0
+                
+                # Plot selection
+                selected_plot = st.selectbox(
+                    "Select Plot:",
+                    [p["name"] for p in plot_files],
+                    index=st.session_state[state_key],
+                    key=f"select_{plot_type}"
+                )
+                # Update index based on selection
+                selected_idx = [p["name"] for p in plot_files].index(selected_plot)
+                if st.session_state[state_key] != selected_idx:
+                    st.session_state[state_key] = selected_idx
+                
+                # Display selected plot
+                current_plot = plot_files[st.session_state[state_key]]
+                if os.path.exists(current_plot["path"]):
+                    display_interactive_plot(current_plot["path"])
+                else:
+                    st.warning(f"Plot file not found: {current_plot['path']}")
+            else:
+                st.info("No scatter plots are available.")
+            
         elif plot_type == "activity":
             # Get all JSON files in the Activity folder
             activity_folder = os.path.join(folder_path, "Activity")
@@ -593,6 +673,37 @@ def show_interactive_plots(folder_path: str, plot_type: str) -> None:
             plot_files = [{"name": os.path.basename(f).replace(".json", ""), "path": f} for f in json_files]
             state_key = "activity_index"
             
+            # Display plots
+            if plot_files:
+                # Initialize state if not set
+                if state_key not in st.session_state:
+                    st.session_state[state_key] = 0
+                
+                # Ensure the index is within bounds
+                if st.session_state[state_key] >= len(plot_files):
+                    st.session_state[state_key] = 0
+                
+                # Plot selection
+                selected_plot = st.selectbox(
+                    "Select Activity Plot:",
+                    [p["name"] for p in plot_files],
+                    index=st.session_state[state_key],
+                    key=f"select_{plot_type}"
+                )
+                # Update index based on selection
+                selected_idx = [p["name"] for p in plot_files].index(selected_plot)
+                if st.session_state[state_key] != selected_idx:
+                    st.session_state[state_key] = selected_idx
+                
+                # Display selected plot
+                current_plot = plot_files[st.session_state[state_key]]
+                if os.path.exists(current_plot["path"]):
+                    display_interactive_plot(current_plot["path"])
+                else:
+                    st.warning(f"Plot file not found: {current_plot['path']}")
+            else:
+                st.info("No activity plots are available.")
+            
         elif plot_type == "sei":
             sei_folder = os.path.join(folder_path, "SEI")
             
@@ -600,9 +711,31 @@ def show_interactive_plots(folder_path: str, plot_type: str) -> None:
                 logger.warning(f"SEI folder does not exist: {sei_folder}")
                 st.warning(f"SEI plots folder does not exist")
                 return
-                
-            # Look for group-based boxplots first (sei_boxplot_group*.json)
-            group_files = glob.glob(os.path.join(sei_folder, "*boxplot_group*.json"))
+            
+            # Toggle between SEI and NSEI
+            # Initialize toggle state if not set
+            if "sei_metric_toggle" not in st.session_state:
+                st.session_state.sei_metric_toggle = "SEI"
+            
+            # Toggle selection
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                selected_metric = st.radio(
+                    "Select Metric:",
+                    ["SEI", "NSEI"],
+                    index=0 if st.session_state.sei_metric_toggle == "SEI" else 1,
+                    key="sei_metric_selector"
+                )
+                st.session_state.sei_metric_toggle = selected_metric
+            
+            with col2:
+                st.info(f"**{'Surface Efficiency Index' if selected_metric == 'SEI' else 'Normalized Surface Efficiency Index'}**: "
+                        f"{'Measures activity relative to polar surface area' if selected_metric == 'SEI' else 'SEI normalized by the number of polar atoms'}")
+            
+            # Look for group-based boxplots matching the selected metric
+            metric_lower = selected_metric.lower()
+            group_files = glob.glob(os.path.join(sei_folder, f"{metric_lower}_boxplot_group*.json"))
+            
             if group_files:
                 # Sort them properly by group number
                 def get_group_num(filename):
@@ -611,16 +744,55 @@ def show_interactive_plots(folder_path: str, plot_type: str) -> None:
                     return int(match.group(1)) if match else 0
                 
                 group_files.sort(key=get_group_num)
-                plot_files = [{"name": f"SEI Group {get_group_num(f)}" if 'sei_boxplot' in f.lower() else 
-                                       f"NSEI Group {get_group_num(f)}", 
-                               "path": f} for f in group_files]
+                plot_files = [{"name": f"{selected_metric} Group {get_group_num(f)}", "path": f} for f in group_files]
+                
+                # Initialize index if not set
+                if "sei_group_index" not in st.session_state:
+                    st.session_state.sei_group_index = 0
+                
+                # Ensure the index is within bounds
+                if st.session_state.sei_group_index >= len(plot_files):
+                    st.session_state.sei_group_index = 0
+                
+                # Add navigation buttons for groups
+                col1, col2, col3 = st.columns([1, 3, 1])
+                
+                # Define navigation callbacks
+                def go_to_prev_sei_group():
+                    st.session_state.sei_group_index = (st.session_state.sei_group_index - 1) % len(plot_files)
+                
+                def go_to_next_sei_group():
+                    st.session_state.sei_group_index = (st.session_state.sei_group_index + 1) % len(plot_files)
+                
+                with col1:
+                    st.button("◀ Previous Group", key="prev_sei_group", on_click=go_to_prev_sei_group)
+                
+                with col2:
+                    group_idx = st.selectbox(
+                        "Select Group:",
+                        range(1, len(plot_files) + 1),
+                        index=st.session_state.sei_group_index,
+                        format_func=lambda x: f"Group {x}",
+                        key="sei_group_selector"
+                    )
+                    # Update index based on selection (zero-based)
+                    new_idx = group_idx - 1
+                    if st.session_state.sei_group_index != new_idx:
+                        st.session_state.sei_group_index = new_idx
+                
+                with col3:
+                    st.button("Next Group ▶", key="next_sei_group", on_click=go_to_next_sei_group)
+                
+                # Display the current plot
+                current_plot = plot_files[st.session_state.sei_group_index]
+                if os.path.exists(current_plot["path"]):
+                    display_interactive_plot(current_plot["path"])
+                else:
+                    st.warning(f"Plot file not found: {current_plot['path']}")
             else:
-                # Fallback to all JSON files if no group files found
-                json_files = glob.glob(os.path.join(sei_folder, "*.json"))
-                plot_files = [{"name": os.path.basename(f).replace(".json", ""), "path": f} for f in json_files]
-            
-            state_key = "sei_index"
-            
+                # No group files found
+                st.info(f"No {selected_metric} box plots available. This may happen if there's insufficient data.")
+        
         elif plot_type == "bei":
             bei_folder = os.path.join(folder_path, "BEI")
             
@@ -628,9 +800,31 @@ def show_interactive_plots(folder_path: str, plot_type: str) -> None:
                 logger.warning(f"BEI folder does not exist: {bei_folder}")
                 st.warning(f"BEI plots folder does not exist")
                 return
-                
-            # Look for group-based boxplots (bei_boxplot_group*.json)
-            group_files = glob.glob(os.path.join(bei_folder, "*boxplot_group*.json"))
+            
+            # Toggle between BEI and nBEI
+            # Initialize toggle state if not set
+            if "bei_metric_toggle" not in st.session_state:
+                st.session_state.bei_metric_toggle = "BEI"
+            
+            # Toggle selection
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                selected_metric = st.radio(
+                    "Select Metric:",
+                    ["BEI", "nBEI"],
+                    index=0 if st.session_state.bei_metric_toggle == "BEI" else 1,
+                    key="bei_metric_selector"
+                )
+                st.session_state.bei_metric_toggle = selected_metric
+            
+            with col2:
+                st.info(f"**{'Binding Efficiency Index' if selected_metric == 'BEI' else 'Normalized Binding Efficiency Index'}**: "
+                        f"{'Measures activity relative to molecular weight' if selected_metric == 'BEI' else 'BEI normalized considering heavy atoms'}")
+            
+            # Look for group-based boxplots matching the selected metric
+            metric_lower = selected_metric.lower()
+            group_files = glob.glob(os.path.join(bei_folder, f"{metric_lower}_boxplot_group*.json"))
+            
             if group_files:
                 # Sort them properly by group number
                 def get_group_num(filename):
@@ -639,90 +833,58 @@ def show_interactive_plots(folder_path: str, plot_type: str) -> None:
                     return int(match.group(1)) if match else 0
                 
                 group_files.sort(key=get_group_num)
-                plot_files = [{"name": f"BEI Group {get_group_num(f)}", "path": f} for f in group_files]
+                plot_files = [{"name": f"{selected_metric} Group {get_group_num(f)}", "path": f} for f in group_files]
+                
+                # Initialize index if not set
+                if "bei_group_index" not in st.session_state:
+                    st.session_state.bei_group_index = 0
+                
+                # Ensure the index is within bounds
+                if st.session_state.bei_group_index >= len(plot_files):
+                    st.session_state.bei_group_index = 0
+                
+                # Add navigation buttons for groups
+                col1, col2, col3 = st.columns([1, 3, 1])
+                
+                # Define navigation callbacks
+                def go_to_prev_bei_group():
+                    st.session_state.bei_group_index = (st.session_state.bei_group_index - 1) % len(plot_files)
+                
+                def go_to_next_bei_group():
+                    st.session_state.bei_group_index = (st.session_state.bei_group_index + 1) % len(plot_files)
+                
+                with col1:
+                    st.button("◀ Previous Group", key="prev_bei_group", on_click=go_to_prev_bei_group)
+                
+                with col2:
+                    group_idx = st.selectbox(
+                        "Select Group:",
+                        range(1, len(plot_files) + 1),
+                        index=st.session_state.bei_group_index,
+                        format_func=lambda x: f"Group {x}",
+                        key="bei_group_selector"
+                    )
+                    # Update index based on selection (zero-based)
+                    new_idx = group_idx - 1
+                    if st.session_state.bei_group_index != new_idx:
+                        st.session_state.bei_group_index = new_idx
+                
+                with col3:
+                    st.button("Next Group ▶", key="next_bei_group", on_click=go_to_next_bei_group)
+                
+                # Display the current plot
+                current_plot = plot_files[st.session_state.bei_group_index]
+                if os.path.exists(current_plot["path"]):
+                    display_interactive_plot(current_plot["path"])
+                else:
+                    st.warning(f"Plot file not found: {current_plot['path']}")
             else:
-                # Fallback to all JSON files if no group files found
-                json_files = glob.glob(os.path.join(bei_folder, "*.json"))
-                plot_files = [{"name": os.path.basename(f).replace(".json", ""), "path": f} for f in json_files]
-            
-            state_key = "bei_index"
-            
+                # No group files found
+                st.info(f"No {selected_metric} box plots available. This may happen if there's insufficient data.")
+        
         else:
             logger.warning(f"Unknown plot type: {plot_type}")
             st.warning(f"Unknown plot type: {plot_type}")
-            return
-        
-        # Log findings
-        logger.info(f"Found {len(plot_files)} plot files for type {plot_type}")
-        if plot_files:
-            logger.info(f"Plot files: {[p['name'] for p in plot_files]}")
-        
-        if not plot_files:
-            logger.warning(f"No {plot_type} plots available.")
-            st.info(f"No {plot_type} plots are available. This may happen if there's insufficient data for these plots.")
-            return
-        
-        # Initialize state if not set
-        if state_key not in st.session_state:
-            st.session_state[state_key] = 0
-        
-        # Plot selection
-        plot_names = [p["name"] for p in plot_files]
-        
-        # Ensure the index is within bounds (in case plots changed between renders)
-        if st.session_state[state_key] >= len(plot_names):
-            st.session_state[state_key] = 0
-            
-        # Add navigation buttons for clustered plots (for SEI and BEI boxplots)
-        if plot_type in ["sei", "bei"] and any("Group" in name for name in plot_names):
-            col1, col2, col3 = st.columns([1, 3, 1])
-            
-            with col1:
-                prev_idx = (st.session_state[state_key] - 1) % len(plot_names)
-                # Add unique key for Previous button combining plot_type and 'prev'
-                if st.button("◀ Previous Group", key=f"{plot_type}_prev_btn"):
-                    st.session_state[state_key] = prev_idx
-                    st.experimental_rerun()
-            
-            with col2:
-                selected_plot = st.selectbox(
-                    f"Select {plot_type.title()} Plot:",
-                    plot_names,
-                    index=st.session_state[state_key],
-                    key=f"{plot_type}_select_box"  # Add unique key for select box
-                )
-                # Update session state based on selection
-                st.session_state[state_key] = plot_names.index(selected_plot)
-            
-            with col3:
-                next_idx = (st.session_state[state_key] + 1) % len(plot_names)
-                # Add unique key for Next button combining plot_type and 'next'
-                if st.button("Next Group ▶", key=f"{plot_type}_next_btn"):
-                    st.session_state[state_key] = next_idx
-                    st.experimental_rerun()
-        else:
-            # Standard plot selection for non-grouped plots
-            selected_plot = st.selectbox(
-                f"Select {plot_type.title()} Plot:",
-                plot_names,
-                index=st.session_state[state_key],
-                key=f"{plot_type}_select_box"  # Add unique key for select box
-            )
-            # Update session state based on selection
-            st.session_state[state_key] = plot_names.index(selected_plot)
-        
-        # Display selected plot
-        current_plot = plot_files[st.session_state[state_key]]
-        if os.path.exists(current_plot["path"]):
-            try:
-                display_interactive_plot(current_plot["path"])
-            except Exception as e:
-                logger.error(f"Error displaying plot {current_plot['name']}: {str(e)}")
-                st.error(f"Error displaying plot: {str(e)}")
-                st.info("Try regenerating the plot by reprocessing the compound.")
-        else:
-            logger.warning(f"Plot file not found: {current_plot['path']}")
-            st.warning(f"Plot file not found: {current_plot['path']}")
     
     except Exception as e:
         logger.error(f"Error displaying {plot_type} plots: {str(e)}")

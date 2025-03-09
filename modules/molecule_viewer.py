@@ -55,39 +55,92 @@ def generate_3d_coordinates(smiles: str, optimize: bool = True) -> Optional[Chem
 
 def get_molecule_style_controls() -> Dict:
     """
-    Create UI controls for molecule style.
+    Create UI controls for molecule style with improved state management.
     
     Returns:
         Dict: Dictionary of style settings
     """
+    # Initialize session state for style settings if not already set
+    if 'molecule_style' not in st.session_state:
+        st.session_state.molecule_style = MOLECULE_3D_STYLE
+    if 'molecule_radius' not in st.session_state:
+        st.session_state.molecule_radius = 0.3
+    if 'molecule_coloring' not in st.session_state:
+        st.session_state.molecule_coloring = "element"
+    if 'molecule_show_surface' not in st.session_state:
+        st.session_state.molecule_show_surface = False
+    if 'molecule_surface_type' not in st.session_state:
+        st.session_state.molecule_surface_type = "VDW"
+    if 'molecule_opacity' not in st.session_state:
+        st.session_state.molecule_opacity = 0.5
+    if 'molecule_background' not in st.session_state:
+        st.session_state.molecule_background = "white"
+    
     st.sidebar.subheader("Molecule Visualization Settings")
     
     # Visualization style
     style_options = ["stick", "line", "cross", "sphere", "cartoon"]
-    style = st.sidebar.selectbox(
+    selected_style = st.sidebar.selectbox(
         "Visualization Style:",
         style_options,
-        index=style_options.index(MOLECULE_3D_STYLE) if MOLECULE_3D_STYLE in style_options else 0
+        index=style_options.index(st.session_state.molecule_style) if st.session_state.molecule_style in style_options else 0,
+        key="style_selector"
     )
+    st.session_state.molecule_style = selected_style
     
     # Additional settings based on style
-    style_settings = {"style": style}
+    style_settings = {"style": selected_style}
     
-    if style == "stick":
-        style_settings["radius"] = st.sidebar.slider("Stick Radius:", 0.1, 1.0, 0.3, 0.05)
-    elif style == "sphere":
-        style_settings["radius"] = st.sidebar.slider("Sphere Radius:", 0.5, 3.0, 1.2, 0.1)
+    if selected_style == "stick":
+        radius = st.sidebar.slider(
+            "Stick Radius:", 0.1, 1.0, st.session_state.molecule_radius, 0.05,
+            key="stick_radius"
+        )
+        st.session_state.molecule_radius = radius
+        style_settings["radius"] = radius
+    elif selected_style == "sphere":
+        radius = st.sidebar.slider(
+            "Sphere Radius:", 0.5, 3.0, st.session_state.molecule_radius, 0.1,
+            key="sphere_radius"
+        )
+        st.session_state.molecule_radius = radius
+        style_settings["radius"] = radius
     
     # Color scheme
     coloring_options = ["element", "residue", "spectrum"]
-    coloring = st.sidebar.selectbox("Coloring Scheme:", coloring_options)
+    coloring = st.sidebar.selectbox(
+        "Coloring Scheme:", 
+        coloring_options,
+        index=coloring_options.index(st.session_state.molecule_coloring) if st.session_state.molecule_coloring in coloring_options else 0,
+        key="coloring_selector"
+    )
+    st.session_state.molecule_coloring = coloring
     style_settings["coloring"] = coloring
     
     # Surface options
-    if st.sidebar.checkbox("Show Surface", False):
+    show_surface = st.sidebar.checkbox(
+        "Show Surface", 
+        st.session_state.molecule_show_surface,
+        key="show_surface"
+    )
+    st.session_state.molecule_show_surface = show_surface
+    
+    if show_surface:
         surface_options = ["VDW", "SAS", "MS"]
-        surface_type = st.sidebar.selectbox("Surface Type:", surface_options)
-        opacity = st.sidebar.slider("Surface Opacity:", 0.1, 1.0, 0.5, 0.05)
+        surface_type = st.sidebar.selectbox(
+            "Surface Type:", 
+            surface_options,
+            index=surface_options.index(st.session_state.molecule_surface_type) if st.session_state.molecule_surface_type in surface_options else 0,
+            key="surface_type"
+        )
+        st.session_state.molecule_surface_type = surface_type
+        
+        opacity = st.sidebar.slider(
+            "Surface Opacity:", 0.1, 1.0, st.session_state.molecule_opacity, 0.05,
+            key="surface_opacity"
+        )
+        st.session_state.molecule_opacity = opacity
+        
         style_settings["surface"] = {
             "type": surface_type,
             "opacity": opacity
@@ -95,7 +148,23 @@ def get_molecule_style_controls() -> Dict:
     
     # Background color
     bg_color_options = ["white", "black", "grey"]
-    style_settings["background"] = st.sidebar.selectbox("Background Color:", bg_color_options)
+    background = st.sidebar.selectbox(
+        "Background Color:", 
+        bg_color_options,
+        index=bg_color_options.index(st.session_state.molecule_background) if st.session_state.molecule_background in bg_color_options else 0,
+        key="bg_color"
+    )
+    st.session_state.molecule_background = background
+    style_settings["background"] = background
+    
+    # Add a button to apply changes - using on_click instead of experimental_rerun
+    if 'apply_style_clicked' not in st.session_state:
+        st.session_state.apply_style_clicked = False
+        
+    def set_apply_clicked():
+        st.session_state.apply_style_clicked = True
+    
+    st.sidebar.button("Apply Visual Changes", key="apply_vis_changes", on_click=set_apply_clicked)
     
     return style_settings
 
@@ -134,24 +203,27 @@ def view_molecule_3d(
         
         # Create style options JSON for 3Dmol.js
         style_obj = {}
-        if style_settings["style"] == "stick":
+        style_name = style_settings.get("style", "stick")
+        
+        if style_name == "stick":
             style_obj = {"stick": {"radius": style_settings.get("radius", 0.3)}}
-        elif style_settings["style"] == "sphere":
+        elif style_name == "sphere":
             style_obj = {"sphere": {"radius": style_settings.get("radius", 1.2)}}
-        elif style_settings["style"] == "line":
+        elif style_name == "line":
             style_obj = {"line": {}}
-        elif style_settings["style"] == "cross":
+        elif style_name == "cross":
             style_obj = {"cross": {"lineWidth": 2}}
-        elif style_settings["style"] == "cartoon":
+        elif style_name == "cartoon":
             style_obj = {"cartoon": {}}
         
-        # Coloring
-        if style_settings["coloring"] == "element":
-            # No need to modify style_obj, element is default
+        # Coloring settings
+        coloring = style_settings.get("coloring", "element")
+        if coloring == "element":
+            # Default element coloring, no need to modify style_obj
             pass
-        elif style_settings["coloring"] == "residue":
+        elif coloring == "residue":
             style_obj["colorByResidue"] = True
-        elif style_settings["coloring"] == "spectrum":
+        elif coloring == "spectrum":
             style_obj["colorScheme"] = "spectrum"
         
         # Convert to JSON string for JavaScript
@@ -162,9 +234,21 @@ def view_molecule_3d(
         if "surface" in style_settings:
             surface_type = style_settings["surface"]["type"]
             opacity = style_settings["surface"]["opacity"]
-            surface_code = f'viewer.addSurface($3Dmol.SurfaceType.{surface_type}, {{opacity: {opacity}}});'
+            
+            # Map surface types to 3Dmol.js constants
+            surface_type_map = {
+                "VDW": "$3Dmol.SurfaceType.VDW",
+                "SAS": "$3Dmol.SurfaceType.SAS",
+                "MS": "$3Dmol.SurfaceType.MS"
+            }
+            
+            surface_type_js = surface_type_map.get(surface_type, "$3Dmol.SurfaceType.VDW")
+            surface_code = f'viewer.addSurface({surface_type_js}, {{opacity: {opacity}}});'
         
-        # Create HTML component for 3Dmol viewer
+        # Background color
+        bg_color = style_settings.get("background", "white")
+        
+        # Create HTML component for 3Dmol viewer with console debug logs
         html_content = f"""
         <script src="https://cdnjs.cloudflare.com/ajax/libs/3Dmol/2.0.1/3Dmol-min.js"></script>
         <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.3/jquery.min.js"></script>
@@ -174,14 +258,34 @@ def view_molecule_3d(
                 height: {height}px;
                 position: relative;
             }}
+            .controls {{
+                margin: 10px 0;
+            }}
+            .control-label {{
+                font-weight: bold;
+                margin-right: 5px;
+            }}
         </style>
         <div id="3dmol-viewer" class="mol-container"></div>
         <script>
-            let viewer = $3Dmol.createViewer($("#3dmol-viewer"), {{backgroundColor: "{style_settings['background']}"}});
+            // Debug info
+            console.log("Style settings:", {json.dumps(style_settings)});
+            console.log("Style JSON:", {style_json});
+            
+            // Create viewer with specified background color
+            let viewer = $3Dmol.createViewer($("#3dmol-viewer"), {{backgroundColor: "{bg_color}"}});
+            
+            // Load the molecule data
             let pdbData = `{pdb_block}`;
             viewer.addModel(pdbData, "pdb");
+            
+            // Apply style
             viewer.setStyle({{}}, {style_json});
+            
+            // Add surface if specified
             {surface_code}
+            
+            // Set the view
             viewer.zoomTo();
             viewer.render();
         </script>
@@ -240,7 +344,7 @@ def molecule_viewer_app(compound_folder: str) -> None:
             st.warning("No molecular structures available for this compound.")
             return
         
-        # Get style settings from sidebar
+        # Get style settings from sidebar - ADD THIS LINE
         style_settings = get_molecule_style_controls()
         
         # Main content area
@@ -297,7 +401,7 @@ def molecule_viewer_app(compound_folder: str) -> None:
                 view_molecule_from_smiles(
                     mol_data['SMILES'],
                     height=500,
-                    style_settings=style_settings,
+                    style_settings=style_settings,  # PASS STYLE SETTINGS HERE
                     optimize=True
                 )
             else:
@@ -306,7 +410,7 @@ def molecule_viewer_app(compound_folder: str) -> None:
                 if os.path.exists(pdb_path):
                     with open(pdb_path, 'r') as f:
                         pdb_block = f.read()
-                    view_molecule_3d(pdb_block, height=500, style_settings=style_settings)
+                    view_molecule_3d(pdb_block, height=500, style_settings=style_settings)  # PASS STYLE SETTINGS HERE
                 else:
                     st.warning("3D structure model not available. Try regenerating from SMILES.")
     
