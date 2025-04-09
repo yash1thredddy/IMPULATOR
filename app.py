@@ -1,8 +1,3 @@
-"""
-IMPULATOR - Improved Molecule Property Calculator and Analyzer
-
-Main Streamlit application file with modular architecture and optimized API calls.
-"""
 import os
 import logging
 import streamlit as st
