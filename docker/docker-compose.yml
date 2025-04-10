@@ -1,0 +1,111 @@
+version: '3.8'
+
+services:
+  postgresql:
+    image: postgres:latest
+    container_name: postgresql
+    environment:
+      - POSTGRES_USER=impulser
+      - POSTGRES_PASSWORD=impulser
+      - POSTGRES_DB=impulser_db
+    volumes:
+      - postgresql_data:/var/lib/postgresql/data
+    networks:
+      - impulser_network
+
+  rabbitmq:
+    image: rabbitmq:latest
+    container_name: rabbitmq
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - impulser_network
+
+  api_gateway:
+    image: python:3.11-slim-bullseye
+    container_name: api_gateway
+    volumes:
+      - ./services/api_gateway:/app
+    working_dir: /app
+    command: ["python", "app.py"]
+    networks:
+      - impulser_network
+    depends_on:
+      - rabbitmq
+
+  compound_service:
+    image: python:3.11-slim-bullseye
+    container_name: compound_service
+    volumes:
+      - ./services/compound_service:/app
+    working_dir: /app
+    command: ["python", "app.py"]
+    networks:
+      - impulser_network
+    depends_on:
+      - postgresql
+      - rabbitmq
+
+  analysis_service:
+    image: python:3.11-slim-bullseye
+    container_name: analysis_service
+    volumes:
+      - ./services/analysis_service:/app
+    working_dir: /app
+    command: ["python", "app.py"]
+    networks:
+      - impulser_network
+    depends_on:
+      - postgresql
+      - rabbitmq
+      - chembl_service
+      - pubchem_service
+
+  visualization_service:
+    image: python:3.11-slim-bullseye
+    container_name: visualization_service
+    volumes:
+      - ./services/visualization_service:/app
+    working_dir: /app
+    command: ["python", "app.py"]
+    networks:
+      - impulser_network
+    depends_on:
+      - rabbitmq
+
+  chembl_service:
+    image: python:3.11-slim-bullseye
+    container_name: chembl_service
+    volumes:
+      - ./services/chembl_service:/app
+    working_dir: /app
+    command: ["python", "app.py"]
+    networks:
+      - impulser_network
+
+  pubchem_service:
+    image: python:3.11-slim-bullseye
+    container_name: pubchem_service
+    volumes:
+      - ./services/pubchem_service:/app
+    working_dir: /app
+    command: ["python", "app.py"]
+    networks:
+      - impulser_network
+
+  pdb_service:
+    image: python:3.11-slim-bullseye
+    container_name: pdb_service
+    volumes:
+      - ./services/pdb_service:/app
+    working_dir: /app
+    command: ["python", "app.py"]
+    networks:
+      - impulser_network
+
+volumes:
+  postgresql_data:
+  rabbitmq_data:
+
+networks:
+  impulser_network:
