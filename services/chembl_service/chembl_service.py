@@ -144,14 +144,15 @@ class ChEMBLService:
                             # Add molecular properties if available
                             if 'molecule_properties' in mol_details:
                                 props = mol_details['molecule_properties']
+                                
                                 enhanced_mol['properties'] = {
-                                    'molecular_weight': props.get('full_mwt'),
-                                    'alogp': props.get('alogp'),
-                                    'hba': props.get('hba'),
-                                    'hbd': props.get('hbd'),
-                                    'psa': props.get('psa'),
-                                    'rtb': props.get('rtb'),
-                                    'ro5_violations': props.get('num_ro5_violations')
+                                    'molecular_weight': float(props.get('full_mwt', 0) or 0),
+                                    'alogp': float(props.get('alogp', 0) or 0),
+                                    'hba': int(props.get('hba', 0) or 0),
+                                    'hbd': int(props.get('hbd', 0) or 0),
+                                    'psa': float(props.get('psa', 0) or 0),
+                                    'rtb': int(props.get('rtb', 0) or 0),
+                                    'ro5_violations': int(props.get('num_ro5_violations', 0) or 0)
                                 }
                             
                             # Add smiles if available

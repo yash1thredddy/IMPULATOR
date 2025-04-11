@@ -330,43 +330,79 @@ class ChEMBLServicer(chembl_service_pb2_grpc.ChEMBLServiceServicer):
             logger.info(f"Cached data with key: {key}")
         except Exception as e:
             logger.error(f"Error caching data: {str(e)}")
+    #sss
     
+    # In the _convert_to_compound_list method, add proper type conversion:
+
     def _convert_to_compound_list(self, compounds):
         """
         Convert compound data to gRPC CompoundList message.
-        
-        Args:
-            compounds: List of compound dictionaries
-            
-        Returns:
-            CompoundList: gRPC message
         """
         result = chembl_service_pb2.CompoundList()
         
         for compound in compounds:
+            # Create safe version with type conversion
             compound_data = chembl_service_pb2.CompoundData(
                 chembl_id=compound.get('chembl_id', ''),
                 molecule_name=compound.get('molecule_name', ''),
-                canonical_smiles=compound.get('canonical_smiles', ''),
-                similarity=compound.get('similarity', 0)
+                canonical_smiles=compound.get('canonical_smiles', '')
             )
+            
+            # Safely convert similarity to float
+            try:
+                compound_data.similarity = float(compound.get('similarity', 0))
+            except (TypeError, ValueError):
+                compound_data.similarity = 0.0
             
             # Add properties if available
             if 'properties' in compound and compound['properties']:
                 props = compound['properties']
-                compound_data.properties.molecular_weight = props.get('molecular_weight', 0)
-                compound_data.properties.psa = props.get('psa', 0)
-                compound_data.properties.hba = props.get('hba', 0)
-                compound_data.properties.hbd = props.get('hbd', 0)
-                compound_data.properties.num_ro5_violations = props.get('num_ro5_violations', 0)
-                compound_data.properties.alogp = props.get('alogp', 0)
-                compound_data.properties.rtb = props.get('rtb', 0)
-                compound_data.properties.num_heavy_atoms = props.get('num_heavy_atoms', 0)
+                
+                # Safely set molecular properties with type conversion
+                try:
+                    compound_data.properties.molecular_weight = float(props.get('molecular_weight', 0))
+                except (TypeError, ValueError):
+                    compound_data.properties.molecular_weight = 0.0
+                    
+                try:
+                    compound_data.properties.psa = float(props.get('psa', 0))
+                except (TypeError, ValueError):
+                    compound_data.properties.psa = 0.0
+                    
+                try:
+                    compound_data.properties.hba = int(props.get('hba', 0))
+                except (TypeError, ValueError):
+                    compound_data.properties.hba = 0
+                    
+                try:
+                    compound_data.properties.hbd = int(props.get('hbd', 0))
+                except (TypeError, ValueError):
+                    compound_data.properties.hbd = 0
+                    
+                try:
+                    compound_data.properties.num_ro5_violations = int(props.get('num_ro5_violations', 0))
+                except (TypeError, ValueError):
+                    compound_data.properties.num_ro5_violations = 0
+                    
+                try:
+                    compound_data.properties.alogp = float(props.get('alogp', 0))
+                except (TypeError, ValueError):
+                    compound_data.properties.alogp = 0.0
+                    
+                try:
+                    compound_data.properties.rtb = int(props.get('rtb', 0))
+                except (TypeError, ValueError):
+                    compound_data.properties.rtb = 0
+                    
+                try:
+                    compound_data.properties.num_heavy_atoms = int(props.get('num_heavy_atoms', 0))
+                except (TypeError, ValueError):
+                    compound_data.properties.num_heavy_atoms = 0
             
             result.compounds.append(compound_data)
         
         return result
-    
+        
     def _convert_to_molecule_data(self, molecule):
         """
         Convert molecule data to gRPC MoleculeData message.
@@ -435,10 +471,10 @@ class ChEMBLServicer(chembl_service_pb2_grpc.ChEMBLServiceServicer):
         return chembl_service_pb2.ClassificationData(
             kingdom=classification.get('kingdom', ''),
             superclass=classification.get('superclass', ''),
-            class_=classification.get('class', ''),
+            class_=classification.get('class', ''),  # Using class_ to avoid reserved keyword
             subclass=classification.get('subclass', '')
         )
-
+        
 def serve():
     """Start the gRPC server."""
     config = Config()
