@@ -1,7 +1,13 @@
-import os
 import logging
 import json
-from flask import Flask, request, jsonify
+import pika
+import threading
+from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from typing import List, Optional, Dict, Any
+
 from visualization_service import VisualizationService
 from config import Config
 
@@ -9,92 +15,149 @@ from config import Config
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
+app = FastAPI(title="Visualization Service", description="Service for generating visualizations")
+config = Config()
+
+# Initialize the service
 service = VisualizationService(
-    mongo_uri=Config.MONGO_URI,
-    mongo_db_name=Config.MONGO_DB_NAME,
-    plot_width=Config.PLOT_DEFAULT_WIDTH,
-    plot_height=Config.PLOT_DEFAULT_HEIGHT
+    mongo_uri=config.MONGO_URI,
+    mongo_db_name=config.MONGO_DB_NAME,
+    plot_width=config.PLOT_DEFAULT_WIDTH,
+    plot_height=config.PLOT_DEFAULT_HEIGHT
 )
 
-@app.route('/health', methods=['GET'])
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, restrict this to specific domains
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Pydantic models
+class PlotRequest(BaseModel):
+    x_field: str
+    y_field: str
+    color_field: Optional[str] = None
+    title: Optional[str] = None
+
+# Authentication dependency (placeholder - would be implemented with proper JWT validation)
+async def get_current_user(authorization: Optional[str] = Header(None)) -> str:
+    if not authorization or not authorization.startswith("Bearer "):
+        return "test_user"  # Default for testing
+    
+    # In a real implementation, you would validate the JWT token
+    return "test_user"  # Return user ID
+
+@app.get("/health")
 def health_check():
     """Health check endpoint."""
-    return jsonify({"status": "OK", "service": "Visualization Service"}), 200
+    return {"status": "OK", "service": "Visualization Service"}
 
-@app.route('/visualizations/<compound_id>/efficiency-plots', methods=['GET'])
-def get_efficiency_plots(compound_id):
+@app.get("/visualizations/{compound_id}/efficiency-plots")
+async def get_efficiency_plots(compound_id: str, current_user: str = Depends(get_current_user)):
     """Get efficiency plots for a compound."""
     try:
         plots = service.generate_efficiency_plots(compound_id)
         if plots:
-            return jsonify(plots), 200
+            return plots
         else:
-            return jsonify({"message": "No plot data available"}), 404
+            raise HTTPException(status_code=404, detail="No plot data available")
     except Exception as e:
         logger.error(f"Error generating efficiency plots: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/visualizations/<compound_id>/scatter-plot', methods=['POST'])
-def create_scatter_plot(compound_id):
-    """Create a custom scatter plot."""
-    try:
-        data = service.get_visualization_data(compound_id)
-        if not data:
-            return jsonify({"message": "No data available for this compound"}), 404
-            
-        plot_params = request.get_json()
-        if not plot_params:
-            return jsonify({"error": "No plot parameters provided"}), 400
-            
-        x_field = plot_params.get('x_field')
-        y_field = plot_params.get('y_field')
-        color_field = plot_params.get('color_field')
-        title = plot_params.get('title')
-        
-        if not x_field or not y_field:
-            return jsonify({"error": "x_field and y_field are required"}), 400
-        
-        # Extract data for the plot
-        plot_data = service.extract_plot_data(data, x_field, y_field, color_field)
-        
-        if plot_data:
-            plot = service.generate_scatter_plot(
-                data=plot_data,
-                x_field=x_field,
-                y_field=y_field,
-                color_field=color_field,
-                title=title
-            )
-            
-            if plot:
-                return jsonify(plot), 200
-            else:
-                return jsonify({"message": "Failed to generate plot"}), 500
-        else:
-            return jsonify({"message": "No valid data for plotting"}), 404
-            
-    except Exception as e:
-        logger.error(f"Error creating scatter plot: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/visualizations/<compound_id>/activity-plot', methods=['GET'])
-def get_activity_plot(compound_id):
+@app.get("/visualizations/{compound_id}/activity-plot")
+async def get_activity_plot(compound_id: str, current_user: str = Depends(get_current_user)):
     """Get activity distribution plot for a compound."""
     try:
         plot = service.generate_activity_plot(compound_id)
         if plot:
-            return jsonify(plot), 200
+            return plot
         else:
-            return jsonify({"message": "No activity data available"}), 404
+            raise HTTPException(status_code=404, detail="No activity data available")
     except Exception as e:
         logger.error(f"Error generating activity plot: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.teardown_appcontext
-def shutdown_session(exception=None):
-    """Close connections when the application shuts down."""
+@app.post("/visualizations/{compound_id}/scatter-plot")
+async def create_scatter_plot(compound_id: str, plot_request: PlotRequest, current_user: str = Depends(get_current_user)):
+    """Create a custom scatter plot."""
+    try:
+        plot = service.generate_custom_plot(
+            compound_id=compound_id,
+            x_field=plot_request.x_field,
+            y_field=plot_request.y_field,
+            color_field=plot_request.color_field,
+            title=plot_request.title
+        )
+        
+        if plot:
+            return plot
+        else:
+            raise HTTPException(status_code=404, detail="No valid data for plotting")
+    except Exception as e:
+        logger.error(f"Error creating scatter plot: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+def start_visualization_queue_consumer():
+    """
+    Start a consumer for the visualization queue to process visualization requests.
+    In a real implementation, this would handle more complex visualization tasks.
+    """
+    try:
+        connection = pika.BlockingConnection(
+            pika.ConnectionParameters(host=config.RABBITMQ_HOST)
+        )
+        channel = connection.channel()
+        
+        queue_name = config.VISUALIZATION_QUEUE
+        channel.queue_declare(queue=queue_name, durable=True)
+        
+        def callback(ch, method, properties, body):
+            try:
+                message = json.loads(body)
+                logger.info(f"Processing visualization message: {message}")
+                
+                # Get compound ID from message
+                compound_id = message.get("compound_id")
+                if not compound_id:
+                    logger.error("Invalid message: missing compound_id")
+                    ch.basic_ack(delivery_tag=method.delivery_tag)
+                    return
+                
+                # Generate and cache visualizations
+                service.generate_efficiency_plots(compound_id)
+                service.generate_activity_plot(compound_id)
+                
+                # Acknowledge message
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                logger.info(f"Successfully processed visualization for compound {compound_id}")
+                
+            except Exception as e:
+                logger.error(f"Error processing visualization message: {str(e)}")
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+        
+        channel.basic_qos(prefetch_count=1)
+        channel.basic_consume(queue=queue_name, on_message_callback=callback)
+        
+        logger.info(f"Starting visualization queue consumer on {queue_name}")
+        channel.start_consuming()
+        
+    except Exception as e:
+        logger.error(f"Error starting visualization queue consumer: {str(e)}")
+
+# Start the queue consumer in a separate thread
+consumer_thread = threading.Thread(target=start_visualization_queue_consumer, daemon=True)
+consumer_thread.start()
+
+# Graceful shutdown
+@app.on_event("shutdown")
+def shutdown_event():
     service.close_connections()
+    logger.info("Application shutdown. Closed all connections.")
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=Config.SERVICE_PORT, debug=Config.DEBUG)
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=config.SERVICE_PORT)

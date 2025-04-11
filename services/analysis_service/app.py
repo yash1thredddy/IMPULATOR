@@ -1,9 +1,10 @@
-import os
 import logging
-import json
-import uuid
 import threading
-from flask import Flask, request, jsonify
+from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List, Optional, Dict, Any
+
 from analysis_service import AnalysisServicer
 from config import Config
 
@@ -11,88 +12,146 @@ from config import Config
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
+app = FastAPI(title="Analysis Service", description="Service for analyzing compounds")
+config = Config()
 
 # Create database connection parameters
 db_params = {
-    "dbname": Config.POSTGRES_DB,
-    "user": Config.POSTGRES_USER,
-    "password": Config.POSTGRES_PASSWORD,
-    "host": Config.POSTGRES_HOST
+    "dbname": config.POSTGRES_DB,
+    "user": config.POSTGRES_USER,
+    "password": config.POSTGRES_PASSWORD,
+    "host": config.POSTGRES_HOST,
+    "port": config.POSTGRES_PORT
 }
 
 # Initialize the service
 service = AnalysisServicer(
     db_params=db_params,
-    mongo_uri=Config.MONGO_URI,
-    mongo_db_name=Config.MONGO_DB_NAME,
+    mongo_uri=config.MONGO_URI,
+    mongo_db_name=config.MONGO_DB_NAME,
     rabbitmq_params={
-        "host": Config.RABBITMQ_HOST,
-        "port": Config.RABBITMQ_PORT
+        "host": config.RABBITMQ_HOST,
+        "port": config.RABBITMQ_PORT
     },
-    chembl_service_url=Config.CHEMBL_SERVICE_URL,
-    queue_name=Config.COMPOUND_QUEUE,
-    config=Config
+    queue_name=config.COMPOUND_QUEUE,
+    config=config
 )
 
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, restrict this to specific domains
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Pydantic models
+class ActivityRequest(BaseModel):
+    activity_value: float
+    molecular_weight: float
+    tpsa: float
+    num_heavy_atoms: int
+    num_polar_atoms: int
+
+# Authentication dependency (placeholder - would be implemented with proper JWT validation)
+async def get_current_user(authorization: Optional[str] = Header(None)) -> str:
+    if not authorization or not authorization.startswith("Bearer "):
+        return "test_user"  # Default for testing
+    
+    # In a real implementation, you would validate the JWT token
+    return "test_user"  # Return user ID
+
 # Start the RabbitMQ consumer in a separate thread
-consumer_thread = threading.Thread(target=service.start_consuming)
-consumer_thread.daemon = True  # Allow the thread to exit when the main thread exits
+def start_consumer():
+    try:
+        service.start_consuming()
+    except Exception as e:
+        logger.error(f"Error in consumer thread: {e}")
+
+consumer_thread = threading.Thread(target=start_consumer, daemon=True)
 consumer_thread.start()
 
-@app.route('/health', methods=['GET'])
+@app.get("/health")
 def health_check():
     """Health check endpoint."""
-    return jsonify({"status": "OK", "service": "Analysis Service"}), 200
+    return {"status": "OK", "service": "Analysis Service"}
 
-@app.route('/analysis/<job_id>', methods=['GET'])
-def get_analysis_job(job_id):
+@app.get("/analysis/{job_id}")
+async def get_analysis_job(job_id: str, current_user: str = Depends(get_current_user)):
     """Get the status and results of an analysis job."""
     try:
         job = service.get_job_status(job_id)
         if job:
-            return jsonify(job), 200
+            return job
         else:
-            return jsonify({"error": "Job not found"}), 404
+            raise HTTPException(status_code=404, detail="Job not found")
     except Exception as e:
         logger.error(f"Error retrieving job {job_id}: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/analysis/<compound_id>/results', methods=['GET'])
-def get_analysis_results(compound_id):
+@app.get("/analysis/{compound_id}/results")
+async def get_analysis_results(compound_id: str, current_user: str = Depends(get_current_user)):
     """Get the analysis results for a compound."""
     try:
         results = service.get_analysis_results(compound_id)
         if results:
-            return jsonify(results), 200
+            return results
         else:
-            return jsonify({"message": "No results found for this compound"}), 404
+            raise HTTPException(status_code=404, detail="No results found for this compound")
     except Exception as e:
         logger.error(f"Error retrieving results for compound {compound_id}: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/analysis/calculate-metrics', methods=['POST'])
-def calculate_metrics():
+@app.post("/analysis/calculate-metrics")
+async def calculate_metrics(request: ActivityRequest, current_user: str = Depends(get_current_user)):
     """Calculate efficiency metrics for the provided data."""
-    data = request.get_json()
-    if not data:
-        return jsonify({"error": "No data provided"}), 400
-    
     try:
-        activities = data.get('activities', [])
-        molecular_weight = data.get('molecular_weight')
-        tpsa = data.get('tpsa')
-        
-        metrics = service.calculate_efficiency_metrics(activities, molecular_weight, tpsa)
-        return jsonify(metrics), 200
+        metrics = service.calculate_efficiency_metrics(
+            activity_value=request.activity_value,
+            molecular_weight=request.molecular_weight,
+            tpsa=request.tpsa,
+            num_heavy_atoms=request.num_heavy_atoms,
+            num_polar_atoms=request.num_polar_atoms
+        )
+        return metrics
     except Exception as e:
         logger.error(f"Error calculating metrics: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.teardown_appcontext
-def shutdown_session(exception=None):
-    """Clean up resources when the application shuts down."""
+@app.post("/analysis/{job_id}/process")
+async def process_job(job_id: str, current_user: str = Depends(get_current_user)):
+    """Manually trigger processing for a job."""
+    try:
+        # Get job details
+        job = service.get_job_status(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        
+        # Get compound details
+        compound_id = job.get("compound_id")
+        if not compound_id:
+            raise HTTPException(status_code=400, detail="Job has no associated compound")
+        
+        # Process the job
+        success = service.process_activities(job_id, compound_id)
+        
+        if success:
+            return {"message": "Job processing initiated successfully"}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to process job")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing job {job_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Graceful shutdown
+@app.on_event("shutdown")
+def shutdown_event():
     service.close_connections()
+    logger.info("Application shutdown. Closed all connections.")
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=Config.SERVICE_PORT, debug=Config.DEBUG)
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=config.SERVICE_PORT)

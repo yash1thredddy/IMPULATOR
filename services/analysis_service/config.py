@@ -16,11 +16,16 @@ class Config:
     RABBITMQ_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
     RABBITMQ_PORT = int(os.environ.get('RABBITMQ_PORT', '5672'))
     COMPOUND_QUEUE = 'compound-processing-queue'
+    VISUALIZATION_QUEUE = 'visualization-queue'
     
-    # ChEMBL Service
-    CHEMBL_SERVICE_URL = os.environ.get('CHEMBL_SERVICE_URL', 'http://localhost:8003')
+    # ChEMBL Service gRPC configuration
+    CHEMBL_SERVICE_GRPC_HOST = os.environ.get('CHEMBL_SERVICE_GRPC_HOST', 'localhost')
+    CHEMBL_SERVICE_GRPC_PORT = int(os.environ.get('CHEMBL_SERVICE_GRPC_PORT', '50051'))
     
     # Service configuration
     SERVICE_PORT = int(os.environ.get('ANALYSIS_SERVICE_PORT', '8002'))
     MAX_WORKERS = int(os.environ.get('MAX_WORKERS', '4'))
     DEBUG = os.environ.get('DEBUG', 'True') == 'True'
+    
+    # Activity types to process
+    ACTIVITY_TYPES = ['IC50', 'EC50', 'Ki', 'Kd', 'AC50', 'GI50', 'MIC']
