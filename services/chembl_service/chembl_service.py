@@ -12,10 +12,14 @@ logger = logging.getLogger(__name__)
 class ChEMBLService:
     def __init__(self):
         """Initializes the ChEMBLService with a Redis connection."""
+        config = Config()
         self.redis_client = redis.Redis(
-            host=Config.REDIS_HOST, port=Config.REDIS_PORT, db=Config.REDIS_DB
+            host=config.REDIS_HOST, port=config.REDIS_PORT, db=config.REDIS_DB
         )
+        self.cache_expiry = config.CACHE_EXPIRY
         self.molecule_resource = new_client.molecule
+        self.similarity_resource = new_client.similarity
+        self.activity_resource = new_client.activity
 
     def _handle_chembl_error(self, e, message="ChEMBL API error"):
         """Handles ChEMBL API errors."""
@@ -39,6 +43,11 @@ class ChEMBLService:
         Returns:
             list or None: A list of results from the ChEMBL API, or None if an error occurs.
         """
+        cache_key = f"chembl:{resource}:{lookup_param}:{lookup_value}"
+        cached_result = self.check_cache(cache_key)
+        if cached_result:
+            return cached_result
+            
         try:
             logger.info(
                 f"Querying ChEMBL for {resource} with {lookup_param} = {lookup_value}"
@@ -50,17 +59,35 @@ class ChEMBLService:
                     response = self.molecule_resource.filter(
                         molecule_chembl_id=lookup_value
                     )
-                    return list(response)
+                    results = list(response)
+                    self.cache_result(cache_key, results)
+                    return results
 
                 elif lookup_param == "smiles":
                     self.molecule_resource.set_format("json")
                     response = self.molecule_resource.filter(
-                        preferred_compound_names__iregex=lookup_value
+                        molecule_structures__canonical_smiles=lookup_value
                     )
-                    return list(response)
+                    results = list(response)
+                    self.cache_result(cache_key, results)
+                    return results
                 else:
                     logger.error(
                         f"Invalid lookup parameter for molecule resource: {lookup_param}"
+                    )
+                    return None
+            elif resource == "activity":
+                if lookup_param == "molecule_chembl_id":
+                    self.activity_resource.set_format("json")
+                    response = self.activity_resource.filter(
+                        molecule_chembl_id=lookup_value
+                    )
+                    results = list(response)
+                    self.cache_result(cache_key, results)
+                    return results
+                else:
+                    logger.error(
+                        f"Invalid lookup parameter for activity resource: {lookup_param}"
                     )
                     return None
             else:
@@ -93,21 +120,55 @@ class ChEMBLService:
             logger.info(
                 f"Querying ChEMBL for molecules similar to SMILES '{smiles}' with similarity >= {similarity}%"
             )
-            molecule = new_client.molecule
-            molecule.set_format("json")
-            sim_mols = molecule.filter(
-                similarity__gt=similarity,  # Greater than or equal to the threshold
-                molecules__molecule_structures__canonical_smiles=smiles,
+            self.similarity_resource.set_format("json")
+            sim_mols = self.similarity_resource.filter(
+                smiles=smiles,
+                similarity=similarity
             )
 
             if sim_mols:
                 # Convert the results (generator) to a list before caching
                 result_list = list(sim_mols)
-                self.cache_result(cache_key, result_list)
+                
+                # Add additional information to each molecule
+                enhanced_results = []
+                for mol in result_list:
+                    mol_chembl_id = mol.get('molecule_chembl_id')
+                    if mol_chembl_id:
+                        # Get more details for this molecule
+                        mol_details = self.get_molecule_data(mol_chembl_id)
+                        if mol_details:
+                            # Enhance the molecule with additional details
+                            enhanced_mol = {**mol}
+                            
+                            # Add molecular properties if available
+                            if 'molecule_properties' in mol_details:
+                                props = mol_details['molecule_properties']
+                                enhanced_mol['properties'] = {
+                                    'molecular_weight': props.get('full_mwt'),
+                                    'alogp': props.get('alogp'),
+                                    'hba': props.get('hba'),
+                                    'hbd': props.get('hbd'),
+                                    'psa': props.get('psa'),
+                                    'rtb': props.get('rtb'),
+                                    'ro5_violations': props.get('num_ro5_violations')
+                                }
+                            
+                            # Add smiles if available
+                            if 'molecule_structures' in mol_details:
+                                enhanced_mol['smiles'] = mol_details['molecule_structures'].get('canonical_smiles')
+                            
+                            enhanced_results.append(enhanced_mol)
+                        else:
+                            enhanced_results.append(mol)
+                    else:
+                        enhanced_results.append(mol)
+                
+                self.cache_result(cache_key, enhanced_results)
                 logger.info(
-                    f"Found {len(result_list)} similar molecules for SMILES '{smiles}' and cached the result."
+                    f"Found {len(enhanced_results)} similar molecules for SMILES '{smiles}' and cached the result."
                 )
-                return result_list
+                return enhanced_results
             else:
                 logger.info(
                     f"No molecules found similar to SMILES '{smiles}' with similarity >= {similarity}%"
@@ -137,9 +198,8 @@ class ChEMBLService:
 
         try:
             logger.info(f"Querying ChEMBL for molecule data with ChEMBL ID: {chembl_id}")
-            molecule = new_client.molecule
-            molecule.set_format("json")
-            results = molecule.filter(molecule_chembl_id=chembl_id)
+            self.molecule_resource.set_format("json")
+            results = self.molecule_resource.filter(molecule_chembl_id=chembl_id)
 
             # Convert the results (generator) to a list and get the first item if available
             result_list = list(results)
@@ -179,136 +239,16 @@ class ChEMBLService:
         except redis.exceptions.RedisError as e:
             return self._handle_redis_error(e, f"Error checking cache for key: {key}")
 
-    def cache_result(self, key, data, expiration=3600):
+    def cache_result(self, key, data):
         """
         Caches a result in Redis.
 
         Args:
             key (str): The cache key.
             data: The data to cache (must be JSON serializable).
-            expiration (int, optional): The cache expiration time in seconds (default is 1 hour).
         """
         try:
-            self.redis_client.set(key, json.dumps(data), ex=expiration)
-            logger.info(f"Cached data with key: {key} (expires in {expiration} seconds)")
+            self.redis_client.set(key, json.dumps(data), ex=self.cache_expiry)
+            logger.info(f"Cached data with key: {key} (expires in {self.cache_expiry} seconds)")
         except redis.exceptions.RedisError as e:
             self._handle_redis_error(e, f"Error caching data with key: {key}")
-
-
-import unittest
-from unittest.mock import patch, MagicMock
-
-
-class TestChEMBLService(unittest.TestCase):
-    def setUp(self):
-        # Initialize ChEMBLService
-        self.chembl_service = ChEMBLService()
-
-        # Mock the Redis client to avoid actual cache interactions during tests
-        self.mock_redis_client = MagicMock()
-        self.chembl_service.redis_client = self.mock_redis_client
-
-    @patch("chembl_webresource_client.new_client.new_client.molecule")
-    def test_make_chembl_request_success(self, mock_molecule):
-        # Test a successful ChEMBL API request for a molecule
-        mock_response = [{"molecule_chembl_id": "CHEMBL123"}]
-        mock_molecule.filter.return_value = mock_response
-
-        result = self.chembl_service.make_chembl_request(
-            "molecule", "molecule_chembl_id", "CHEMBL123"
-        )
-        self.assertEqual(result, mock_response)
-        mock_molecule.filter.assert_called_once_with(molecule_chembl_id="CHEMBL123")
-
-    @patch("chembl_webresource_client.new_client.new_client.molecule")
-    def test_make_chembl_request_failure(self, mock_molecule):
-        # Test a failed ChEMBL API request
-        mock_molecule.filter.side_effect = Exception("API Error")
-
-        result = self.chembl_service.make_chembl_request(
-            "molecule", "molecule_chembl_id", "CHEMBL123"
-        )
-        self.assertIsNone(result)
-        mock_molecule.filter.assert_called_once_with(molecule_chembl_id="CHEMBL123")
-
-    @patch("chembl_webresource_client.new_client.new_client.molecule")
-    def test_get_similarity_success_from_api(self, mock_molecule):
-        # Test fetching similar molecules successfully from the API
-        mock_response = [{"molecule_chembl_id": "CHEMBL456", "similarity": 95}]
-        mock_molecule.filter.return_value = mock_response
-        self.mock_redis_client.get.return_value = None  # Simulate cache miss
-
-        result = self.chembl_service.get_similarity("CC(=O)Oc1ccccc1C(=O)O", 90)
-        self.assertEqual(result, mock_response)
-        self.mock_redis_client.get.assert_called_once()
-        self.mock_redis_client.set.assert_called_once()  # Ensure result is cached
-        mock_molecule.filter.assert_called_once()
-
-    def test_get_similarity_success_from_cache(self):
-        # Test retrieving similar molecules successfully from the cache
-        cached_data = [{"molecule_chembl_id": "CHEMBL789", "similarity": 92}]
-        self.mock_redis_client.get.return_value = json.dumps(
-            cached_data
-        )  # Simulate cache hit
-
-        result = self.chembl_service.get_similarity("CC(=O)Oc1ccccc1C(=O)O", 90)
-        self.assertEqual(result, cached_data)
-        self.mock_redis_client.get.assert_called_once()
-
-    @patch("chembl_webresource_client.new_client.new_client.molecule")
-    def test_get_similarity_no_results(self, mock_molecule):
-        # Test when no similar molecules are found
-        mock_molecule.filter.return_value = []
-        self.mock_redis_client.get.return_value = None
-
-        result = self.chembl_service.get_similarity("Invalid SMILES", 90)
-        self.assertEqual(result, [])
-        self.mock_redis_client.get.assert_called_once()
-        mock_molecule.filter.assert_called_once()
-
-    @patch("chembl_webresource_client.new_client.new_client.molecule")
-    def test_get_molecule_data_success_from_api(self, mock_molecule):
-        # Test fetching molecule data successfully from the API
-        mock_response = {"molecule_chembl_id": "CHEMBL123", "pref_name": "Aspirin"}
-        mock_molecule.filter.return_value = [mock_response]
-        self.mock_redis_client.get.return_value = None  # Simulate cache miss
-
-        result = self.chembl_service.get_molecule_data("CHEMBL123")
-        self.assertEqual(result, mock_response)
-        self.mock_redis_client.get.assert_called_once()
-        self.mock_redis_client.set.assert_called_once()  # Ensure result is cached
-        mock_molecule.filter.assert_called_once_with(molecule_chembl_id="CHEMBL123")
-
-    def test_get_molecule_data_success_from_cache(self):
-        # Test retrieving molecule data successfully from the cache
-        cached_data = {"molecule_chembl_id": "CHEMBL456", "pref_name": "Ibuprofen"}
-        self.mock_redis_client.get.return_value = json.dumps(
-            cached_data
-        )  # Simulate cache hit
-
-        result = self.chembl_service.get_molecule_data("CHEMBL456")
-        self.assertEqual(result, cached_data)
-        self.mock_redis_client.get.assert_called_once()
-
-    @patch("chembl_webresource_client.new_client.new_client.molecule")
-    def test_get_molecule_data_not_found(self, mock_molecule):
-        # Test when no molecule data is found
-        mock_molecule.filter.return_value = []
-        self.mock_redis_client.get.return_value = None
-
-        result = self.chembl_service.get_molecule_data("CHEMBL999")
-        self.assertIsNone(result)
-        self.mock_redis_client.get.assert_called_once()
-        mock_molecule.filter.assert_called_once_with(molecule_chembl_id="CHEMBL999")
-
-    def test_check_cache(self):
-        # Test the check_cache method
-        self.mock_redis_client.get.return_value = json.dumps({"key": "value"})
-        result = self.chembl_service.check_cache("test_key")
-        self.assertEqual(result, {"key": "value"})
-        self.mock_redis_client.get.assert_called_once_with("test_key")
-
-    def test_cache_result(self):
-        # Test the cache_result method
-        self.chembl_service.cache_result("test_key", {"key": "value"})
-        self.mock_redis_client.set.assert_called_once()

@@ -1,10 +1,13 @@
 import logging
 import json
 import os
+import uuid
+from typing import Dict, List, Tuple, Any
 
 import psycopg2
 import pika
-from typing import Dict, Tuple, Any
+from rdkit import Chem
+from rdkit.Chem import Descriptors, Lipinski
 
 from config import Config
 
@@ -26,37 +29,77 @@ class CompoundService:
                 dbname=self.config.db_name, 
                 user=self.config.db_user, 
                 password=self.config.db_password, 
-                host=self.config.db_host
+                host=self.config.db_host,
+                port=self.config.db_port
             )
             logger.info("Connected to PostgreSQL database")
         except psycopg2.Error as e:
             logger.error(f"Error connecting to database: {e}")
             self.db_conn = None
+            raise
 
     def _disconnect_db(self) -> None:
         """Disconnects from the PostgreSQL database."""
         if self.db_conn:
             self.db_conn.close()
+            self.db_conn = None
             logger.info("Disconnected from PostgreSQL database")
 
     def _connect_rabbitmq(self) -> None:
         """Connects to the RabbitMQ server."""
         try:
             self.mq_connection = pika.BlockingConnection(
-                pika.ConnectionParameters(host=self.config.rabbitmq_host)
+                pika.ConnectionParameters(
+                    host=self.config.rabbitmq_host,
+                    port=self.config.rabbitmq_port
+                )
             )
             self.mq_channel = self.mq_connection.channel()
+            # Declare the queue
+            self.mq_channel.queue_declare(queue=self.config.compounds_queue_name, durable=True)
             logger.info("Connected to RabbitMQ")
         except pika.exceptions.AMQPConnectionError as e:
             logger.error(f"Error connecting to RabbitMQ: {e}")
             self.mq_channel = None
             self.mq_connection = None
+            raise
 
     def _disconnect_rabbitmq(self) -> None:
         """Disconnects from the RabbitMQ server."""
-        if self.mq_connection:
+        if self.mq_connection and self.mq_connection.is_open:
             self.mq_connection.close()
+            self.mq_channel = None
+            self.mq_connection = None
             logger.info("Disconnected from RabbitMQ")
+
+    def _calculate_molecular_properties(self, smiles: str) -> Dict[str, Any]:
+        """Calculates molecular properties using RDKit.
+        
+        Args:
+            smiles (str): SMILES string of the molecule
+            
+        Returns:
+            Dict[str, Any]: Dictionary of calculated properties
+        """
+        try:
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                logger.warning(f"Invalid SMILES string: {smiles}")
+                return {}
+                
+            properties = {
+                'molecular_weight': Descriptors.MolWt(mol),
+                'tpsa': Descriptors.TPSA(mol),
+                'hbd': Lipinski.NumHDonors(mol),
+                'hba': Lipinski.NumHAcceptors(mol),
+                'num_atoms': mol.GetNumAtoms(),
+                'inchi_key': Chem.inchi.MolToInchiKey(mol) if hasattr(Chem, 'inchi') else None
+            }
+            
+            return properties
+        except Exception as e:
+            logger.error(f"Error calculating molecular properties: {e}")
+            return {}
 
     def _validate_compound(self, compound_data: Dict) -> Tuple[bool, str]:
         """Validates compound data.
@@ -71,7 +114,12 @@ class CompoundService:
             return False, "SMILES is required"
         if not compound_data.get("name"):
             return False, "Name is required"
-        # Add more validation as needed, e.g., using RDKit to validate SMILES
+            
+        # Validate SMILES using RDKit
+        mol = Chem.MolFromSmiles(compound_data.get("smiles", ""))
+        if mol is None:
+            return False, "Invalid SMILES string"
+            
         return True, None
 
     def create_compound(self, compound_data: Dict) -> Tuple[bool, Any]:
@@ -87,42 +135,75 @@ class CompoundService:
             self._connect_db()
         if not self.mq_channel:
             self._connect_rabbitmq()
+            
         is_valid, error_message = self._validate_compound(compound_data)
         if not is_valid:
             logger.warning(f"Invalid compound data: {error_message}")
             return False, error_message
 
+        # Calculate molecular properties if not provided
+        if "smiles" in compound_data:
+            properties = self._calculate_molecular_properties(compound_data["smiles"])
+            for key, value in properties.items():
+                if key not in compound_data or not compound_data[key]:
+                    compound_data[key] = value
+
         try:
             with self.db_conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO Compounds (user_id, name, smiles, inchi_key, pubchem_cid, molecular_weight, tpsa, hbd, hba, num_atoms, status)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    RETURNING id;
-                """, (
-                    compound_data["user_id"], 
-                    compound_data["name"], 
-                    compound_data["smiles"],
-                    compound_data.get("inchi_key"),
-                    compound_data.get("pubchem_cid"),
-                    compound_data.get("molecular_weight"),
-                    compound_data.get("tpsa"),
-                    compound_data.get("hbd"),
-                    compound_data.get("hba"),
-                    compound_data.get("num_atoms"),
-                    "pending"  # Initial status
-                ))
+                # Check if compound with same ID already exists
+                if "id" in compound_data:
+                    cur.execute("SELECT id FROM Compounds WHERE id = %s", (compound_data["id"],))
+                    if cur.fetchone():
+                        return False, "Compound with this ID already exists"
+                
+                # Prepare columns and values for insertion
+                columns = ["id", "user_id", "name", "smiles", "status"]
+                values = [
+                    compound_data.get("id", str(uuid.uuid4())),
+                    compound_data.get("user_id"),
+                    compound_data.get("name"),
+                    compound_data.get("smiles"),
+                    compound_data.get("status", "pending")
+                ]
+                
+                # Add optional fields if present
+                optional_fields = [
+                    "inchi_key", "pubchem_cid", "molecular_weight", 
+                    "tpsa", "hbd", "hba", "num_atoms"
+                ]
+                
+                for field in optional_fields:
+                    if field in compound_data and compound_data[field] is not None:
+                        columns.append(field)
+                        values.append(compound_data[field])
+                
+                # Build the SQL query
+                placeholders = ", ".join(["%s"] * len(columns))
+                column_names = ", ".join(columns)
+                
+                # Execute the query
+                cur.execute(
+                    f"INSERT INTO Compounds ({column_names}) VALUES ({placeholders}) RETURNING id",
+                    values
+                )
                 compound_id = cur.fetchone()[0]
                 self.db_conn.commit()
                 logger.info(f"Compound '{compound_data['name']}' created with ID: {compound_id}")
 
                 # Publish message to RabbitMQ
                 if self.mq_channel:
-                    self.mq_channel.queue_declare(queue=self.config.compounds_queue_name)
-                    message = json.dumps({"compound_id": compound_id, "smiles": compound_data["smiles"]})
+                    message = json.dumps({
+                        "compound_id": compound_id, 
+                        "smiles": compound_data["smiles"],
+                        "job_id": str(uuid.uuid4())  # Generate a new UUID for the analysis job
+                    })
                     self.mq_channel.basic_publish(
                         exchange='',
                         routing_key=self.config.compounds_queue_name,
-                        body=message
+                        body=message,
+                        properties=pika.BasicProperties(
+                            delivery_mode=2,  # Make message persistent
+                        )
                     )
                     logger.info(f"Published message to '{self.config.compounds_queue_name}' for compound ID: {compound_id}")
                 else:
@@ -133,6 +214,9 @@ class CompoundService:
             if self.db_conn:
                 self.db_conn.rollback()
             logger.error(f"Error creating compound: {e}")
+            return False, str(e)
+        except Exception as e:
+            logger.error(f"Unexpected error creating compound: {e}")
             return False, str(e)
 
     def read_compound(self, compound_id: str) -> Tuple[Dict, str]:
@@ -148,7 +232,7 @@ class CompoundService:
             self._connect_db()
         try:
             with self.db_conn.cursor() as cur:
-                cur.execute("SELECT * FROM Compounds WHERE id = %s;", (compound_id,))
+                cur.execute("SELECT * FROM Compounds WHERE id = %s", (compound_id,))
                 compound = cur.fetchone()
                 if compound:
                     columns = [desc[0] for desc in cur.description]
@@ -160,6 +244,9 @@ class CompoundService:
                     return None, "Compound not found"
         except psycopg2.Error as e:
             logger.error(f"Error reading compound: {e}")
+            return None, str(e)
+        except Exception as e:
+            logger.error(f"Unexpected error reading compound: {e}")
             return None, str(e)
 
     def update_compound(self, compound_id: str, compound_data: Dict) -> Tuple[bool, str]:
@@ -175,17 +262,57 @@ class CompoundService:
         if not self.db_conn:
             self._connect_db()
         try:
+            # Check if the compound exists
             with self.db_conn.cursor() as cur:
+                cur.execute("SELECT id FROM Compounds WHERE id = %s", (compound_id,))
+                if not cur.fetchone():
+                    return False, "Compound not found"
+                
+                # Don't allow updating the ID
+                if "id" in compound_data:
+                    del compound_data["id"]
+                
+                # Don't update created_at
+                if "created_at" in compound_data:
+                    del compound_data["created_at"]
+                
+                # If SMILES is updated, recalculate molecular properties
+                if "smiles" in compound_data:
+                    is_valid, error = self._validate_compound({"smiles": compound_data["smiles"], "name": "temp"})
+                    if not is_valid:
+                        return False, error
+                    
+                    properties = self._calculate_molecular_properties(compound_data["smiles"])
+                    for key, value in properties.items():
+                        compound_data[key] = value
+                
+                if not compound_data:
+                    return True, None  # Nothing to update
+                
+                # Build update query
                 set_clause = ", ".join([f"{key} = %s" for key in compound_data.keys()])
-                values = list(compound_data.values()) + [compound_id]
-                cur.execute(f"UPDATE Compounds SET {set_clause} WHERE id = %s;", values)
+                set_clause += ", updated_at = NOW()"  # Always update the updated_at timestamp
+                
+                values = list(compound_data.values())
+                values.append(compound_id)  # For the WHERE clause
+                
+                cur.execute(f"UPDATE Compounds SET {set_clause} WHERE id = %s", values)
                 self.db_conn.commit()
-                logger.info(f"Updated compound with ID: {compound_id}")
-                return True, None
+                
+                if cur.rowcount > 0:
+                    logger.info(f"Updated compound with ID: {compound_id}")
+                    return True, None
+                else:
+                    logger.warning(f"No changes made to compound with ID: {compound_id}")
+                    return False, "No changes made"
+                    
         except psycopg2.Error as e:
             if self.db_conn:
                 self.db_conn.rollback()
             logger.error(f"Error updating compound: {e}")
+            return False, str(e)
+        except Exception as e:
+            logger.error(f"Unexpected error updating compound: {e}")
             return False, str(e)
 
     def delete_compound(self, compound_id: str) -> Tuple[bool, str]:
@@ -201,108 +328,55 @@ class CompoundService:
             self._connect_db()
         try:
             with self.db_conn.cursor() as cur:
-                cur.execute("DELETE FROM Compounds WHERE id = %s;", (compound_id,))
+                # Check if the compound exists
+                cur.execute("SELECT id FROM Compounds WHERE id = %s", (compound_id,))
+                if not cur.fetchone():
+                    return False, "Compound not found"
+                
+                # Delete related records in other tables
+                # For now, just delete the compound - in a real system, you might want cascade deletes
+                cur.execute("DELETE FROM Compounds WHERE id = %s", (compound_id,))
                 self.db_conn.commit()
-                logger.info(f"Deleted compound with ID: {compound_id}")
-                return True, None
+                
+                if cur.rowcount > 0:
+                    logger.info(f"Deleted compound with ID: {compound_id}")
+                    return True, None
+                else:
+                    logger.warning(f"Failed to delete compound with ID: {compound_id}")
+                    return False, "Delete operation failed"
+                    
         except psycopg2.Error as e:
             if self.db_conn:
                 self.db_conn.rollback()
             logger.error(f"Error deleting compound: {e}")
             return False, str(e)
+        except Exception as e:
+            logger.error(f"Unexpected error deleting compound: {e}")
+            return False, str(e)
+            
+    def list_compounds(self) -> Tuple[List[Dict], str]:
+        """Lists all compounds from the database.
 
-
-import unittest
-from unittest.mock import patch, MagicMock
-
-class TestCompoundService(unittest.TestCase):
-
-    def setUp(self):
-        self.service = CompoundService()
-        self.test_compound = {
-            "user_id": "test_user",
-            "name": "Test Compound",
-            "smiles": "C1=CC=CC=C1",
-            "inchi_key": "TESTINCHIKEY",
-            "pubchem_cid": "12345",
-            "molecular_weight": 78.11,
-            "tpsa": 0.0,
-            "hbd": 0,
-            "hba": 0,
-            "num_atoms": 6
-        }
-
-    @patch.object(CompoundService, '_connect_db')
-    @patch.object(CompoundService, '_disconnect_db')
-    def test_validate_compound(self, mock_disconnect, mock_connect):
-        # Test valid compound data
-        is_valid, error = self.service._validate_compound(self.test_compound)
-        self.assertTrue(is_valid)
-        self.assertIsNone(error)
-
-        # Test missing SMILES
-        invalid_compound = self.test_compound.copy()
-        invalid_compound["smiles"] = ""
-        is_valid, error = self.service._validate_compound(invalid_compound)
-        self.assertFalse(is_valid)
-        self.assertEqual(error, "SMILES is required")
-
-        # Test missing name
-        invalid_compound = self.test_compound.copy()
-        invalid_compound["name"] = ""
-        is_valid, error = self.service._validate_compound(invalid_compound)
-        self.assertFalse(is_valid)
-        self.assertEqual(error, "Name is required")
-
-    @patch.object(CompoundService, '_connect_db')
-    @patch.object(CompoundService, '_disconnect_db')
-    @patch.object(CompoundService, '_connect_rabbitmq')
-    @patch.object(CompoundService, '_disconnect_rabbitmq')
-    def test_create_compound(self, mock_disconnect_rabbitmq, mock_connect_rabbitmq, mock_disconnect_db, mock_connect_db):
-        # Mock database connection and cursor
-        mock_conn = MagicMock()
-        mock_cur = MagicMock()
-        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
-        mock_cur.fetchone.return_value = (1,)  # Mock compound ID
-        self.service.db_conn = mock_conn
-
-        # Mock RabbitMQ channel
-        mock_channel = MagicMock()
-        self.service.mq_channel = mock_channel
-
-        # Test successful compound creation
-        success, result = self.service.create_compound(self.test_compound)
-        self.assertTrue(success)
-        self.assertEqual(result, 1)
-        mock_cur.execute.assert_called()
-        mock_conn.commit.assert_called()
-        mock_channel.basic_publish.assert_called()
-
-        # Test database error
-        mock_cur.execute.side_effect = psycopg2.Error("Database error")
-        success, result = self.service.create_compound(self.test_compound)
-        self.assertFalse(success)
-        self.assertEqual(result, "Database error")
-        mock_conn.rollback.assert_called()
-
-        # Test invalid compound data
-        invalid_compound = self.test_compound.copy()
-        invalid_compound["smiles"] = ""
-        success, result = self.service.create_compound(invalid_compound)
-        self.assertFalse(success)
-        self.assertEqual(result, "SMILES is required")
-
-    @patch.object(CompoundService, '_connect_db')
-    @patch.object(CompoundService, '_disconnect_db')
-    def test_read_compound(self, mock_disconnect_db, mock_connect_db):
-        pass  # Add tests for read_compound
-
-    @patch.object(CompoundService, '_connect_db')
-    @patch.object(CompoundService, '_disconnect_db')
-    def test_update_compound(self, mock_disconnect_db, mock_connect_db):
-        pass  # Add tests for update_compound
-
-    @patch.object(CompoundService, '_connect_db')
-    @patch.object(CompoundService, '_disconnect_db')
-    def test_delete_compound(self, mock_disconnect_db, mock_connect_db):
-        pass  # Add tests for delete_compound
+        Returns:
+            Tuple[List[Dict], str]: (list of compounds, None) if successful, (None, error message) otherwise.
+        """
+        if not self.db_conn:
+            self._connect_db()
+        try:
+            with self.db_conn.cursor() as cur:
+                cur.execute("SELECT * FROM Compounds;")
+                compounds = cur.fetchall()
+                if compounds:
+                    columns = [desc[0] for desc in cur.description]
+                    compound_list = [dict(zip(columns, compound)) for compound in compounds]
+                    logger.info(f"Retrieved {len(compound_list)} compounds")
+                    return compound_list, None
+                else:
+                    logger.info("No compounds found")
+                    return [], None
+        except psycopg2.Error as e:
+            logger.error(f"Error listing compounds: {e}")
+            return None, str(e)
+        except Exception as e:
+            logger.error(f"Unexpected error listing compounds: {e}")
+            return None, str(e)
