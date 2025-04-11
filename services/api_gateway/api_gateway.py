@@ -5,7 +5,7 @@ import bcrypt
 import logging
 from datetime import datetime, timedelta
 from config import Config
-
+import uuid
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -203,4 +203,3 @@ def close_db_connection(conn):
         logger.error(f"An unexpected error occurred while closing the database connection: {e}")
 
 # Import uuid here to avoid NameError in register_user
-import uuid

@@ -1,8 +1,6 @@
 -- Create the database (if it doesn't exist)
 CREATE DATABASE impulsor_db;
 
--- Connect to the database
-\c impulsor_db;
 
 -- Create the Users table
 CREATE TABLE IF NOT EXISTS Users (
