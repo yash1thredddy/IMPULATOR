@@ -8,7 +8,7 @@ from pprint import pprint
 # Configuration
 API_GATEWAY = "http://localhost:8000"
 TEST_USER_ID = "test_user"
-TEST_SMILES = "O=C1C2=C(OC=C1C3=CC=C(O)C=C3)C=C(O)C=C2O"  # Quercetin
+TEST_SMILES = "O=c1c(O)c(-c2ccc(O)c(O)c2)oc2cc(O)cc(O)c12"  # Quercetin
 TEST_NAME = "Quercetin"
 
 # Helper function for API calls

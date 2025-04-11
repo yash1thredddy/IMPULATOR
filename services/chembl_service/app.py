@@ -7,7 +7,8 @@ from pydantic import BaseModel
 
 from config import Config
 from chembl_service import ChEMBLService
-import grpc_server
+
+import grpc_service
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -105,7 +106,7 @@ def get_classification(request: ClassificationRequest):
 
 def start_grpc_server():
     """Start the gRPC server in a separate thread."""
-    grpc_server.serve()
+    grpc_service.serve()
 
 if __name__ == "__main__":
     # Start gRPC server in a separate thread
