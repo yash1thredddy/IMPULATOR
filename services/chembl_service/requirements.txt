@@ -1,3 +1,9 @@
-flask>=2.0.1
+fastapi>=0.68.0
+uvicorn>=0.15.0
 redis>=3.5.3
 chembl_webresource_client>=0.10.8
+requests>=2.26.0
+grpcio>=1.40.0
+grpcio-tools>=1.40.0
+protobuf>=3.17.3
+pydantic>=1.8.2

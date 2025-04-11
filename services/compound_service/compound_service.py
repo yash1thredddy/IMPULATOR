@@ -2,14 +2,15 @@ import logging
 import json
 import os
 import uuid
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
 
 import psycopg2
 import pika
 from rdkit import Chem
-from rdkit.Chem import Descriptors, Lipinski
+from rdkit.Chem import Descriptors, Lipinski, QED, Crippen, MolSurf
 
 from config import Config
+from chembl_client import ChEMBLClient
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -21,6 +22,7 @@ class CompoundService:
         self.db_conn = None
         self.mq_channel = None
         self.mq_connection = None
+        self.chembl_client = ChEMBLClient()
 
     def _connect_db(self) -> None:
         """Connects to the PostgreSQL database."""
@@ -73,7 +75,8 @@ class CompoundService:
             logger.info("Disconnected from RabbitMQ")
 
     def _calculate_molecular_properties(self, smiles: str) -> Dict[str, Any]:
-        """Calculates molecular properties using RDKit.
+        """
+        Calculates molecular properties using RDKit.
         
         Args:
             smiles (str): SMILES string of the molecule
@@ -89,20 +92,27 @@ class CompoundService:
                 
             properties = {
                 'molecular_weight': Descriptors.MolWt(mol),
-                'tpsa': Descriptors.TPSA(mol),
+                'tpsa': MolSurf.TPSA(mol),
                 'hbd': Lipinski.NumHDonors(mol),
                 'hba': Lipinski.NumHAcceptors(mol),
                 'num_atoms': mol.GetNumAtoms(),
+                'num_heavy_atoms': mol.GetNumHeavyAtoms(),
+                'num_rotatable_bonds': Lipinski.NumRotatableBonds(mol),
+                'num_rings': Chem.rdMolDescriptors.CalcNumRings(mol),
+                'qed': QED.qed(mol),
+                'logp': Crippen.MolLogP(mol),
                 'inchi_key': Chem.inchi.MolToInchiKey(mol) if hasattr(Chem, 'inchi') else None
             }
             
+            logger.info(f"Calculated properties for SMILES: {smiles}")
             return properties
         except Exception as e:
             logger.error(f"Error calculating molecular properties: {e}")
             return {}
 
     def _validate_compound(self, compound_data: Dict) -> Tuple[bool, str]:
-        """Validates compound data.
+        """
+        Validates compound data.
 
         Args:
             compound_data (Dict): Dictionary containing compound data.
@@ -122,6 +132,31 @@ class CompoundService:
             
         return True, None
 
+    def _check_compound_exists(self, smiles: str) -> Tuple[bool, Optional[str]]:
+        """
+        Check if a compound with the given SMILES already exists.
+        
+        Args:
+            smiles: SMILES string of the compound
+            
+        Returns:
+            Tuple[bool, Optional[str]]: (True, compound_id) if exists, (False, None) otherwise
+        """
+        if not self.db_conn:
+            self._connect_db()
+            
+        try:
+            with self.db_conn.cursor() as cur:
+                cur.execute("SELECT id FROM Compounds WHERE smiles = %s", (smiles,))
+                result = cur.fetchone()
+                if result:
+                    logger.info(f"Compound with SMILES {smiles} already exists with ID: {result[0]}")
+                    return True, result[0]
+                return False, None
+        except Exception as e:
+            logger.error(f"Error checking if compound exists: {e}")
+            return False, None
+
     def create_compound(self, compound_data: Dict) -> Tuple[bool, Any]:
         """Creates a new compound in the database.
 
@@ -140,26 +175,34 @@ class CompoundService:
         if not is_valid:
             logger.warning(f"Invalid compound data: {error_message}")
             return False, error_message
+        
+        # Check if the compound already exists
+        exists, existing_id = self._check_compound_exists(compound_data["smiles"])
+        if exists:
+            # Return the existing compound ID
+            return True, existing_id
 
-        # Calculate molecular properties if not provided
-        if "smiles" in compound_data:
-            properties = self._calculate_molecular_properties(compound_data["smiles"])
-            for key, value in properties.items():
-                if key not in compound_data or not compound_data[key]:
-                    compound_data[key] = value
+        # Calculate molecular properties
+        properties = self._calculate_molecular_properties(compound_data["smiles"])
+        for key, value in properties.items():
+            compound_data[key] = value
+        
+        # Get classification data if InChIKey is available
+        if 'inchi_key' in properties and properties['inchi_key']:
+            classification = self.chembl_client.get_compound_classification(properties['inchi_key'])
+            if classification:
+                compound_data.update(classification)
 
         try:
             with self.db_conn.cursor() as cur:
-                # Check if compound with same ID already exists
-                if "id" in compound_data:
-                    cur.execute("SELECT id FROM Compounds WHERE id = %s", (compound_data["id"],))
-                    if cur.fetchone():
-                        return False, "Compound with this ID already exists"
+                # Generate ID if not provided
+                if "id" not in compound_data:
+                    compound_data["id"] = str(uuid.uuid4())
                 
                 # Prepare columns and values for insertion
                 columns = ["id", "user_id", "name", "smiles", "status"]
                 values = [
-                    compound_data.get("id", str(uuid.uuid4())),
+                    compound_data.get("id"),
                     compound_data.get("user_id"),
                     compound_data.get("name"),
                     compound_data.get("smiles"),
@@ -169,7 +212,9 @@ class CompoundService:
                 # Add optional fields if present
                 optional_fields = [
                     "inchi_key", "pubchem_cid", "molecular_weight", 
-                    "tpsa", "hbd", "hba", "num_atoms"
+                    "tpsa", "hbd", "hba", "num_atoms", "num_heavy_atoms",
+                    "num_rotatable_bonds", "num_rings", "qed", "logp",
+                    "kingdom", "superclass", "class", "subclass"
                 ]
                 
                 for field in optional_fields:
@@ -190,12 +235,93 @@ class CompoundService:
                 self.db_conn.commit()
                 logger.info(f"Compound '{compound_data['name']}' created with ID: {compound_id}")
 
-                # Publish message to RabbitMQ
+                # Create a new analysis job
+                job_id = str(uuid.uuid4())
+                cur.execute(
+                    """
+                    INSERT INTO Analysis_Jobs 
+                    (id, compound_id, user_id, status, progress, similarity_threshold) 
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (job_id, compound_id, compound_data.get("user_id"), "pending", 0.0, 
+                     compound_data.get("similarity_threshold", 80))
+                )
+                self.db_conn.commit()
+                logger.info(f"Created analysis job with ID: {job_id} for compound ID: {compound_id}")
+
+                # Get similar compounds using ChEMBL Service
+                similar_compounds = self.chembl_client.get_similar_compounds(
+                    smiles=compound_data["smiles"],
+                    similarity_threshold=compound_data.get("similarity_threshold", 80)
+                )
+                
+                # Store each similar compound in the database
+                for similar_compound in similar_compounds:
+                    # Extract and update properties
+                    similar_properties = similar_compound.get('properties', {})
+                    similar_data = {
+                        "id": str(uuid.uuid4()),
+                        "user_id": compound_data.get("user_id"),
+                        "name": similar_compound.get('molecule_name', 'Unknown'),
+                        "smiles": similar_compound.get('canonical_smiles'),
+                        "status": "completed",
+                        "chembl_id": similar_compound.get('chembl_id'),
+                        "molecular_weight": similar_properties.get('molecular_weight'),
+                        "tpsa": similar_properties.get('psa'),
+                        "hbd": similar_properties.get('hbd'),
+                        "hba": similar_properties.get('hba'),
+                        "num_heavy_atoms": similar_properties.get('num_heavy_atoms')
+                    }
+                    
+                    # Skip if SMILES is missing
+                    if not similar_data["smiles"]:
+                        continue
+                    
+                    # Calculate any missing properties with RDKit
+                    if not all(key in similar_properties for key in ['molecular_weight', 'psa', 'hbd', 'hba']):
+                        missing_props = self._calculate_molecular_properties(similar_data["smiles"])
+                        for key, value in missing_props.items():
+                            if key not in similar_data or not similar_data[key]:
+                                similar_data[key] = value
+                    
+                    # Get classification if InChIKey is available
+                    if 'inchi_key' in similar_data and similar_data['inchi_key']:
+                        classification = self.chembl_client.get_compound_classification(similar_data['inchi_key'])
+                        if classification:
+                            similar_data.update(classification)
+                    
+                    # Prepare columns and values for insertion
+                    sim_columns = []
+                    sim_values = []
+                    for key, value in similar_data.items():
+                        if value is not None:
+                            sim_columns.append(key)
+                            sim_values.append(value)
+                    
+                    # Build and execute query
+                    sim_placeholders = ", ".join(["%s"] * len(sim_columns))
+                    sim_column_names = ", ".join(sim_columns)
+                    
+                    try:
+                        cur.execute(
+                            f"INSERT INTO Compounds ({sim_column_names}) VALUES ({sim_placeholders})",
+                            sim_values
+                        )
+                    except Exception as e:
+                        logger.error(f"Error inserting similar compound: {e}")
+                        # Continue with other compounds
+                        continue
+                
+                self.db_conn.commit()
+                logger.info(f"Stored {len(similar_compounds)} similar compounds for compound ID: {compound_id}")
+
+                # Publish message to RabbitMQ for further analysis
                 if self.mq_channel:
                     message = json.dumps({
-                        "compound_id": compound_id, 
+                        "job_id": job_id,
+                        "compound_id": compound_id,
                         "smiles": compound_data["smiles"],
-                        "job_id": str(uuid.uuid4())  # Generate a new UUID for the analysis job
+                        "similarity_threshold": compound_data.get("similarity_threshold", 80)
                     })
                     self.mq_channel.basic_publish(
                         exchange='',
@@ -205,7 +331,7 @@ class CompoundService:
                             delivery_mode=2,  # Make message persistent
                         )
                     )
-                    logger.info(f"Published message to '{self.config.compounds_queue_name}' for compound ID: {compound_id}")
+                    logger.info(f"Published message to '{self.config.compounds_queue_name}' for job ID: {job_id}")
                 else:
                     logger.warning(f"Failed to publish message: Not connected to RabbitMQ")
 
@@ -237,6 +363,13 @@ class CompoundService:
                 if compound:
                     columns = [desc[0] for desc in cur.description]
                     compound_data = dict(zip(columns, compound))
+                    
+                    # Get associated analysis job
+                    cur.execute("SELECT id FROM Analysis_Jobs WHERE compound_id = %s", (compound_id,))
+                    job = cur.fetchone()
+                    if job:
+                        compound_data['analysis_job_id'] = job[0]
+                    
                     logger.info(f"Read compound with ID: {compound_id}")
                     return compound_data, None
                 else:
@@ -379,4 +512,39 @@ class CompoundService:
             return None, str(e)
         except Exception as e:
             logger.error(f"Unexpected error listing compounds: {e}")
+            return None, str(e)
+            
+    def list_user_compounds(self, user_id: str) -> Tuple[List[Dict], str]:
+        """Lists all compounds for a specific user from the database.
+
+        Args:
+            user_id (str): The ID of the user.
+
+        Returns:
+            Tuple[List[Dict], str]: (list of compounds, None) if successful, (None, error message) otherwise.
+        """
+        if not self.db_conn:
+            self._connect_db()
+        try:
+            with self.db_conn.cursor() as cur:
+                cur.execute("""
+                    SELECT c.*, j.id as job_id, j.status as job_status 
+                    FROM Compounds c 
+                    LEFT JOIN Analysis_Jobs j ON c.id = j.compound_id 
+                    WHERE c.user_id = %s
+                """, (user_id,))
+                compounds = cur.fetchall()
+                if compounds:
+                    columns = [desc[0] for desc in cur.description]
+                    compound_list = [dict(zip(columns, compound)) for compound in compounds]
+                    logger.info(f"Retrieved {len(compound_list)} compounds for user {user_id}")
+                    return compound_list, None
+                else:
+                    logger.info(f"No compounds found for user {user_id}")
+                    return [], None
+        except psycopg2.Error as e:
+            logger.error(f"Error listing compounds for user {user_id}: {e}")
+            return None, str(e)
+        except Exception as e:
+            logger.error(f"Unexpected error listing compounds for user {user_id}: {e}")
             return None, str(e)

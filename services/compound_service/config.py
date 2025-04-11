@@ -13,6 +13,10 @@ class Config:
     rabbitmq_port = int(os.environ.get('RABBITMQ_PORT', '5672'))
     compounds_queue_name = 'compound-processing-queue'
     
+    # ChEMBL Service gRPC configuration
+    chembl_service_grpc_host = os.environ.get('CHEMBL_SERVICE_GRPC_HOST', 'localhost')
+    chembl_service_grpc_port = int(os.environ.get('CHEMBL_SERVICE_GRPC_PORT', '50051'))
+    
     # Service configuration
     service_port = int(os.environ.get('COMPOUND_SERVICE_PORT', '8001'))
     debug = os.environ.get('DEBUG', 'True') == 'True'

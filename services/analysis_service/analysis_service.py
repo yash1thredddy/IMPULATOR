@@ -4,16 +4,18 @@ import json
 import time
 import uuid
 import math
-import requests
+import numpy as np
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any, Union
 
 import psycopg2
 import pymongo
 import pika
-import numpy as np
 from rdkit import Chem
-from rdkit.Chem import Descriptors, Lipinski
+from rdkit.Chem import Descriptors
+
+from chembl_client import ChEMBLClient
+from config import Config
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -25,9 +27,9 @@ class AnalysisServicer:
                  mongo_uri: str,
                  mongo_db_name: str,
                  rabbitmq_params: Dict[str, Any],
-                 chembl_service_url: str,
-                 queue_name: str,
-                 config: Any):
+                 chembl_service_url: Optional[str] = None,
+                 queue_name: str = "compound-processing-queue",
+                 config: Optional[Any] = None):
         """
         Initialize the Analysis Service with configuration parameters.
         
@@ -36,7 +38,7 @@ class AnalysisServicer:
             mongo_uri: MongoDB connection URI
             mongo_db_name: MongoDB database name
             rabbitmq_params: RabbitMQ connection parameters
-            chembl_service_url: URL for the ChEMBL Service
+            chembl_service_url: URL for the ChEMBL Service (legacy)
             queue_name: Name of the RabbitMQ queue to consume
             config: Configuration object
         """
@@ -46,7 +48,7 @@ class AnalysisServicer:
         self.rabbitmq_params = rabbitmq_params
         self.chembl_service_url = chembl_service_url
         self.queue_name = queue_name
-        self.config = config
+        self.config = config or Config()
         
         # Initialize connections to None
         self.postgres_conn = None
@@ -54,6 +56,9 @@ class AnalysisServicer:
         self.mongo_db = None
         self.rabbitmq_connection = None
         self.rabbitmq_channel = None
+        
+        # Initialize ChEMBL client
+        self.chembl_client = ChEMBLClient()
         
     def connect_to_postgres(self):
         """Connect to PostgreSQL database."""
@@ -90,10 +95,16 @@ class AnalysisServicer:
                 )
                 self.rabbitmq_channel = self.rabbitmq_connection.channel()
                 
-                # Declare the queue
+                # Declare the queues
                 self.rabbitmq_channel.queue_declare(
                     queue=self.queue_name,
                     durable=True  # Make sure the queue survives a RabbitMQ restart
+                )
+                
+                # Declare visualization queue
+                self.rabbitmq_channel.queue_declare(
+                    queue=self.config.VISUALIZATION_QUEUE,
+                    durable=True
                 )
                 
                 # Set QoS - Only process one message at a time
@@ -127,6 +138,13 @@ class AnalysisServicer:
         except Exception as e:
             logger.error(f"Error closing RabbitMQ connection: {e}")
             
+        try:
+            if hasattr(self, 'chembl_client') and self.chembl_client:
+                self.chembl_client.close()
+                logger.info("ChEMBL client connection closed")
+        except Exception as e:
+            logger.error(f"Error closing ChEMBL client connection: {e}")
+            
     def get_job_status(self, job_id: str) -> Optional[Dict[str, Any]]:
         """
         Get the status of an analysis job.
@@ -142,13 +160,13 @@ class AnalysisServicer:
             
             with self.postgres_conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, compound_id, status, progress, created_at, updated_at FROM Analysis_Jobs WHERE id = %s",
+                    "SELECT id, compound_id, user_id, status, progress, created_at, updated_at FROM Analysis_Jobs WHERE id = %s",
                     (job_id,)
                 )
                 job = cur.fetchone()
                 
                 if job:
-                    columns = ['id', 'compound_id', 'status', 'progress', 'created_at', 'updated_at']
+                    columns = ['id', 'compound_id', 'user_id', 'status', 'progress', 'created_at', 'updated_at']
                     job_data = dict(zip(columns, job))
                     
                     # Convert datetime objects to ISO format strings
@@ -176,7 +194,7 @@ class AnalysisServicer:
         try:
             self.connect_to_mongo()
                 
-            collection = self.mongo_db.get_collection("analysis_results")
+            collection = self.mongo_db["analysis_results"]
             result = collection.find_one({"compound_id": compound_id})
             
             if result:
@@ -189,88 +207,61 @@ class AnalysisServicer:
             logger.error(f"Error getting analysis results: {str(e)}")
             return None
             
-    def calculate_efficiency_metrics(self, activities: List[Dict[str, Any]], molecular_weight: float, tpsa: float) -> Dict[str, float]:
+    def calculate_efficiency_metrics(self, activity_value: float, molecular_weight: float, tpsa: float, 
+                                    num_heavy_atoms: int, num_polar_atoms: int) -> Dict[str, float]:
         """
-        Calculate efficiency metrics (SEI, BEI, NSEI, nBEI, etc.).
+        Calculate efficiency metrics (SEI, BEI, NSEI, nBEI).
         
         Args:
-            activities: List of activity data
-            molecular_weight: Molecular weight of the compound
-            tpsa: Topological polar surface area of the compound
+            activity_value: Activity value in nM
+            molecular_weight: Molecular weight
+            tpsa: Topological polar surface area
+            num_heavy_atoms: Number of heavy atoms
+            num_polar_atoms: Number of polar atoms
             
         Returns:
-            Dict[str, float]: Calculated efficiency metrics
+            Dict[str, float]: Dictionary of efficiency metrics
         """
-        logger.info(f"Calculating efficiency metrics for MW: {molecular_weight}, TPSA: {tpsa}")
-        
-        # Initialize metrics
-        sei = 0.0
-        bei = 0.0
-        nsei = 0.0
-        nbei = 0.0
-        
         try:
-            # Calculate average pActivity (-log(Activity in M))
-            pActivity = 0.0
-            activity_count = 0
+            # Convert nM to M
+            activity_M = activity_value * 1e-9
             
-            for activity_data in activities:
-                if 'value' in activity_data and isinstance(activity_data['value'], (int, float)):
-                    # Convert to nM if not already
-                    activity_nM = float(activity_data['value'])
-                    
-                    # Convert nM to M (1 nM = 1e-9 M)
-                    activity_M = activity_nM * 1e-9
-                    
-                    # Calculate pActivity (-log10(activity in M))
-                    if activity_M > 0:
-                        pActivity -= math.log10(activity_M)
-                        activity_count += 1
+            # Calculate pActivity (-log10(activity in M))
+            pActivity = -math.log10(activity_M) if activity_M > 0 else 0
             
-            # Calculate average pActivity
-            if activity_count > 0:
-                pActivity /= activity_count
-                
-                # Calculate efficiency metrics
-                if molecular_weight and molecular_weight > 0:
-                    bei = pActivity / (molecular_weight / 1000)  # Scale by MW/1000
-                
-                if tpsa and tpsa > 0:
-                    sei = pActivity / (tpsa / 100)  # Scale by PSA/100
-                
-                # Calculate normalized indices
-                if molecular_weight and tpsa and molecular_weight > 0 and tpsa > 0:
-                    # Get heavy atom count (approximation)
-                    heavy_atoms = molecular_weight / 13.0  # Approximate for organic compounds
-                    
-                    # Number of polar atoms (approximation)
-                    polar_atoms = tpsa / 30.0  # Approximate based on typical PSA contributions
-                    
-                    if polar_atoms > 0:
-                        nsei = sei / polar_atoms
-                    
-                    if heavy_atoms > 0:
-                        nbei = bei - (0.23 * heavy_atoms)  # nBEI formula
-        
+            # Calculate efficiency metrics
+            sei = pActivity / (tpsa / 100) if tpsa and tpsa > 0 else 0
+            bei = pActivity / (molecular_weight / 1000) if molecular_weight and molecular_weight > 0 else 0
+            
+            # Calculate normalized indices
+            nsei = sei / num_polar_atoms if num_polar_atoms > 0 else 0
+            nbei = bei - (0.23 * num_heavy_atoms) if bei > 0 else 0
+            
+            return {
+                "sei": round(sei, 3),
+                "bei": round(bei, 3),
+                "nsei": round(nsei, 3),
+                "nbei": round(nbei, 3),
+                "pActivity": round(pActivity, 3)
+            }
         except Exception as e:
             logger.error(f"Error calculating efficiency metrics: {str(e)}")
-            
-        # Return metrics dict
-        return {
-            "sei": round(sei, 3),
-            "bei": round(bei, 3),
-            "nsei": round(nsei, 3),
-            "nbei": round(nbei, 3)
-        }
+            return {
+                "sei": 0,
+                "bei": 0,
+                "nsei": 0,
+                "nbei": 0,
+                "pActivity": 0
+            }
         
-    def update_job_status(self, job_id: str, status: str, progress: float = None) -> bool:
+    def update_job_status(self, job_id: str, status: str, progress: Optional[float] = None) -> bool:
         """
         Update the status of an analysis job.
         
         Args:
             job_id: The ID of the job
             status: The new status
-            progress: Optional progress percentage (0-100)
+            progress: Optional progress percentage (0-1)
             
         Returns:
             bool: True if successful, False otherwise
@@ -318,7 +309,7 @@ class AnalysisServicer:
             self.connect_to_mongo()
             
             # Check if results already exist for this compound
-            collection = self.mongo_db.get_collection("analysis_results")
+            collection = self.mongo_db["analysis_results"]
             existing = collection.find_one({"compound_id": compound_id})
             
             if existing:
@@ -344,121 +335,219 @@ class AnalysisServicer:
             logger.error(f"Error storing analysis results: {str(e)}")
             return None
             
-    def fetch_similar_compounds(self, smiles: str, similarity_threshold: int = 80) -> List[Dict[str, Any]]:
+    def process_activities(self, job_id: str, compound_id: str, chembl_id: Optional[str] = None):
         """
-        Fetch similar compounds from the ChEMBL Service.
+        Process activities for a compound.
         
         Args:
-            smiles: SMILES string of the compound
-            similarity_threshold: Similarity threshold (0-100)
-            
-        Returns:
-            List[Dict[str, Any]]: List of similar compounds
-        """
-        try:
-            url = f"{self.chembl_service_url}/similarity/{smiles}"
-            params = {"similarity": similarity_threshold}
-            
-            response = requests.get(url, params=params, timeout=30)
-            
-            if response.status_code == 200:
-                compounds = response.json()
-                logger.info(f"Found {len(compounds)} similar compounds for {smiles}")
-                return compounds
-            else:
-                logger.warning(f"ChEMBL Service returned status code {response.status_code}")
-                return []
-                
-        except requests.RequestException as e:
-            logger.error(f"Error fetching similar compounds: {str(e)}")
-            return []
-        
-    def process_compound(self, compound_id: str, smiles: str, job_id: str) -> bool:
-        """
-        Process a compound by fetching similar compounds and calculating efficiency metrics.
-        
-        Args:
-            compound_id: The ID of the compound
-            smiles: SMILES string of the compound
-            job_id: The ID of the analysis job
+            job_id: The job ID
+            compound_id: The compound ID
+            chembl_id: Optional ChEMBL ID if already known
             
         Returns:
             bool: True if successful, False otherwise
         """
         try:
+            self.connect_to_postgres()
+            self.connect_to_mongo()
+            
             # Update job status to processing
-            self.update_job_status(job_id, "processing", 0.0)
+            self.update_job_status(job_id, "processing", 0.2)
             
-            # Fetch similar compounds from ChEMBL Service
-            similar_compounds = self.fetch_similar_compounds(smiles)
-            
-            # Update progress
-            self.update_job_status(job_id, "processing", 40.0)
-            
-            # Process each similar compound
-            for i, compound in enumerate(similar_compounds):
-                # Calculate proportion complete
-                progress = 40.0 + (40.0 * (i + 1) / len(similar_compounds))
-                self.update_job_status(job_id, "processing", progress)
+            # Get the compound details from the database
+            with self.postgres_conn.cursor() as cur:
+                if chembl_id:
+                    cur.execute(
+                        """
+                        SELECT id, smiles, molecular_weight, tpsa, num_heavy_atoms, chembl_id
+                        FROM Compounds 
+                        WHERE chembl_id = %s
+                        """,
+                        (chembl_id,)
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT id, smiles, molecular_weight, tpsa, num_heavy_atoms, chembl_id
+                        FROM Compounds 
+                        WHERE id = %s
+                        """,
+                        (compound_id,)
+                    )
+                    
+                compound = cur.fetchone()
+                if not compound:
+                    logger.error(f"Compound not found: {compound_id}")
+                    self.update_job_status(job_id, "failed")
+                    return False
                 
-                # Get molecule data for this compound
-                chembl_id = compound.get("molecule_chembl_id")
+                # Extract compound details
+                c_id, smiles, molecular_weight, tpsa, num_heavy_atoms, chembl_id = compound
+                
+                # Check if we have a ChEMBL ID
                 if not chembl_id:
-                    continue
-                    
-                try:
-                    # Fetch molecule data
-                    url = f"{self.chembl_service_url}/molecules/{chembl_id}"
-                    response = requests.get(url, timeout=30)
-                    
-                    if response.status_code == 200:
-                        molecule_data = response.json()
-                        
-                        # Extract properties
-                        compound["properties"] = {
-                            "molecular_weight": molecule_data.get("molecule_properties", {}).get("full_mwt"),
-                            "tpsa": molecule_data.get("molecule_properties", {}).get("psa"),
-                            "hba": molecule_data.get("molecule_properties", {}).get("hba"),
-                            "hbd": molecule_data.get("molecule_properties", {}).get("hbd"),
-                            "num_ro5_violations": molecule_data.get("molecule_properties", {}).get("num_ro5_violations")
-                        }
-                        
-                        # Extract activities (placeholder - in real implementation, would fetch from activities endpoint)
-                        compound["activities"] = [
-                            {"type": "IC50", "value": 50.0},  # Example values
-                            {"type": "Ki", "value": 10.0}
-                        ]
-                        
-                        # Calculate efficiency metrics
-                        compound["metrics"] = self.calculate_efficiency_metrics(
-                            compound["activities"],
-                            float(compound["properties"]["molecular_weight"] or 0),
-                            float(compound["properties"]["tpsa"] or 0)
-                        )
-                        
-                except Exception as e:
-                    logger.error(f"Error processing similar compound {chembl_id}: {str(e)}")
-                    # Continue with next compound
-            
-            # Store results
-            results = {
-                "similar_compounds": similar_compounds,
-                "analysis_date": datetime.now().isoformat()
-            }
-            
-            result_id = self.store_analysis_results(compound_id, results)
-            
-            # Update job status to completed
-            self.update_job_status(job_id, "completed", 100.0)
-            
-            return result_id is not None
-            
+                    logger.error(f"No ChEMBL ID found for compound: {compound_id}")
+                    self.update_job_status(job_id, "failed")
+                    return False
+                
+                # Get activities from ChEMBL
+                activities = self.chembl_client.get_compound_activities(
+                    chembl_id=chembl_id,
+                    activity_types=self.config.ACTIVITY_TYPES
+                )
+                
+                if not activities:
+                    logger.warning(f"No activities found for compound: {compound_id}")
+                    self.update_job_status(job_id, "completed", 1.0)
+                    return True
+                
+                # Update job status
+                self.update_job_status(job_id, "processing", 0.5)
+                
+                # Process each activity
+                processed_activities = []
+                
+                # Approximate number of polar atoms based on TPSA
+                num_polar_atoms = int(tpsa / 20) if tpsa else 1  # Rough estimate
+                
+                for activity in activities:
+                    try:
+                        # Check if we have a valid activity value
+                        if 'value' in activity and activity['value'] > 0:
+                            # Calculate efficiency metrics
+                            metrics = self.calculate_efficiency_metrics(
+                                activity_value=activity['value'],
+                                molecular_weight=molecular_weight,
+                                tpsa=tpsa,
+                                num_heavy_atoms=num_heavy_atoms,
+                                num_polar_atoms=num_polar_atoms
+                            )
+                            
+                            # Create processed activity
+                            processed_activity = {
+                                "target_id": activity.get('target_id', ''),
+                                "activity_type": activity.get('activity_type', ''),
+                                "relation": activity.get('relation', '='),
+                                "value": activity.get('value', 0),
+                                "units": activity.get('units', 'nM'),
+                                "metrics": metrics
+                            }
+                            
+                            processed_activities.append(processed_activity)
+                    except Exception as activity_error:
+                        logger.error(f"Error processing activity: {activity_error}")
+                        # Continue with other activities
+                
+                # Store results in MongoDB
+                results = {
+                    "compound_id": compound_id,
+                    "chembl_id": chembl_id,
+                    "activities": processed_activities,
+                    "processing_date": datetime.now().isoformat()
+                }
+                
+                self.store_analysis_results(compound_id, results)
+                
+                # Update job status
+                self.update_job_status(job_id, "processing", 0.8)
+                
+                # Send message to visualization queue
+                self.send_to_visualization_queue(job_id, compound_id)
+                
+                # Update job status to completed
+                self.update_job_status(job_id, "completed", 1.0)
+                return True
+                
         except Exception as e:
-            logger.error(f"Error processing compound {compound_id}: {str(e)}")
-            # Update job status to failed
+            logger.error(f"Error processing activities: {str(e)}")
             self.update_job_status(job_id, "failed")
             return False
-    
+            
+    def send_to_visualization_queue(self, job_id: str, compound_id: str):
+        """
+        Send a message to the visualization queue.
+        
+        Args:
+            job_id: The job ID
+            compound_id: The compound ID
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            self.connect_to_rabbitmq()
+            
+            message = json.dumps({
+                "job_id": job_id,
+                "compound_id": compound_id
+            })
+            
+            self.rabbitmq_channel.basic_publish(
+                exchange='',
+                routing_key=self.config.VISUALIZATION_QUEUE,
+                body=message,
+                properties=pika.BasicProperties(
+                    delivery_mode=2,  # Make message persistent
+                )
+            )
+            
+            logger.info(f"Sent message to visualization queue for job {job_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error sending message to visualization queue: {str(e)}")
+            return False
+            
+    def process_message(self, message_body: str):
+        """
+        Process a message from the RabbitMQ queue.
+        
+        Args:
+            message_body: The message body
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Parse message
+            message = json.loads(message_body)
+            logger.info(f"Processing message: {message}")
+            
+            job_id = message.get("job_id")
+            compound_id = message.get("compound_id")
+            smiles = message.get("smiles")
+            similarity_threshold = message.get("similarity_threshold", 80)
+            
+            if not all([job_id, compound_id]):
+                logger.error("Invalid message: missing required fields")
+                return False
+            
+            # Process activities for the compound
+            success = self.process_activities(job_id, compound_id)
+            
+            # Get similar compounds from the database
+            self.connect_to_postgres()
+            with self.postgres_conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT c.id, c.chembl_id 
+                    FROM Compounds c 
+                    JOIN Analysis_Jobs j ON c.user_id = j.user_id 
+                    WHERE j.id = %s AND c.id != %s
+                    """,
+                    (job_id, compound_id)
+                )
+                similar_compounds = cur.fetchall()
+            
+            # Process activities for each similar compound
+            for sim_id, sim_chembl_id in similar_compounds:
+                if sim_chembl_id:  # Skip compounds without ChEMBL ID
+                    self.process_activities(job_id, sim_id, sim_chembl_id)
+            
+            return success
+        except Exception as e:
+            logger.error(f"Error processing message: {str(e)}")
+            return False
+            
     def start_consuming(self):
         """Start consuming messages from the RabbitMQ queue."""
         try:
@@ -475,42 +564,13 @@ class AnalysisServicer:
                     body: Message body
                 """
                 try:
-                    # Parse message
-                    message = json.loads(body)
-                    logger.info(f"Received message: {message}")
-                    
-                    compound_id = message.get("compound_id")
-                    smiles = message.get("smiles")
-                    job_id = message.get("job_id")
-                    
-                    if not all([compound_id, smiles, job_id]):
-                        logger.error("Invalid message: missing required fields")
-                        ch.basic_ack(delivery_tag=method.delivery_tag)
-                        return
-                    
-                    # Create analysis job record
-                    self.connect_to_postgres()
-                    with self.postgres_conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            INSERT INTO Analysis_Jobs (id, compound_id, user_id, status, progress, similarity_threshold)
-                            VALUES (%s, %s, %s, %s, %s, %s)
-                            ON CONFLICT (id) DO UPDATE SET 
-                                status = EXCLUDED.status,
-                                progress = EXCLUDED.progress,
-                                updated_at = NOW()
-                            """,
-                            (job_id, compound_id, "test_user", "pending", 0.0, 80)
-                        )
-                        self.postgres_conn.commit()
-                    
-                    # Process the compound
-                    success = self.process_compound(compound_id, smiles, job_id)
+                    # Process the message
+                    success = self.process_message(body)
                     
                     # Acknowledge message
                     ch.basic_ack(delivery_tag=method.delivery_tag)
                     
-                    logger.info(f"Processed message for compound {compound_id}" + (" successfully" if success else " with errors"))
+                    logger.info(f"Processed message" + (" successfully" if success else " with errors"))
                     
                 except Exception as e:
                     logger.error(f"Error processing message: {str(e)}")

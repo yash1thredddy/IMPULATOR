@@ -77,12 +77,15 @@ services:
     depends_on:
       - postgresql
       - rabbitmq
+      - chembl_service
     environment:
       - POSTGRES_DB=impulsor_db
       - POSTGRES_USER=impulsor
       - POSTGRES_PASSWORD=impulsor
       - POSTGRES_HOST=postgresql
       - RABBITMQ_HOST=rabbitmq
+      - CHEMBL_SERVICE_GRPC_HOST=chembl_service
+      - CHEMBL_SERVICE_GRPC_PORT=50051
 
   analysis_service:
     build:
@@ -106,7 +109,8 @@ services:
       - MONGO_URI=mongodb://mongodb:27017/
       - MONGO_DB_NAME=impulsor_db
       - RABBITMQ_HOST=rabbitmq
-      - CHEMBL_SERVICE_URL=http://chembl_service:8003
+      - CHEMBL_SERVICE_GRPC_HOST=chembl_service
+      - CHEMBL_SERVICE_GRPC_PORT=50051
 
   visualization_service:
     build:
@@ -132,12 +136,15 @@ services:
       - impulsor_network
     ports:
       - "8003:8003"
+      - "50051:50051"
     depends_on:
       - redis
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_DB=0
+      - CHEMBL_SERVICE_PORT=8003
+      - CHEMBL_SERVICE_GRPC_PORT=50051
 
 volumes:
   postgresql_data:

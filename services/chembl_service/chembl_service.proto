@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+package chembl;
+
+service ChEMBLService {
+  // Search for similar compounds based on SMILES
+  rpc GetSimilarCompounds (SimilarityRequest) returns (CompoundList);
+  
+  // Get molecule details by ChEMBL ID
+  rpc GetMoleculeData (MoleculeRequest) returns (MoleculeData);
+  
+  // Get activities for a compound
+  rpc GetCompoundActivities (ActivityRequest) returns (ActivityList);
+  
+  // Get classification data for a compound
+  rpc GetCompoundClassification (ClassificationRequest) returns (ClassificationData);
+}
+
+message SimilarityRequest {
+  string smiles = 1;
+  int32 similarity_threshold = 2;
+}
+
+message MoleculeRequest {
+  string chembl_id = 1;
+}
+
+message ActivityRequest {
+  string chembl_id = 1;
+  repeated string activity_types = 2;
+}
+
+message ClassificationRequest {
+  string inchi_key = 1;
+}
+
+message CompoundList {
+  repeated CompoundData compounds = 1;
+}
+
+message CompoundData {
+  string chembl_id = 1;
+  string molecule_name = 2;
+  string canonical_smiles = 3;
+  float similarity = 4;
+  MolecularProperties properties = 5;
+}
+
+message MoleculeData {
+  string chembl_id = 1;
+  string molecule_name = 2;
+  string canonical_smiles = 3;
+  string inchi_key = 4;
+  MolecularProperties properties = 5;
+}
+
+message MolecularProperties {
+  float molecular_weight = 1;
+  float psa = 2;
+  int32 hba = 3;
+  int32 hbd = 4;
+  int32 num_ro5_violations = 5;
+  float alogp = 6;
+  int32 rtb = 7;
+  int32 num_heavy_atoms = 8;
+}
+
+message ActivityList {
+  repeated ActivityData activities = 1;
+}
+
+message ActivityData {
+  string chembl_id = 1;
+  string target_id = 2;
+  string activity_type = 3;
+  string relation = 4;
+  float value = 5;
+  string units = 6;
+}
+
+message ClassificationData {
+  string kingdom = 1;
+  string superclass = 2;
+  string class = 3;
+  string subclass = 4;
+}

@@ -1,7 +1,3 @@
--- Create the database (if it doesn't exist)
-CREATE DATABASE impulsor_db;
-
-
 -- Create the Users table
 CREATE TABLE IF NOT EXISTS Users (
     id VARCHAR(36) PRIMARY KEY,
@@ -13,19 +9,29 @@ CREATE TABLE IF NOT EXISTS Users (
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
--- Create the Compounds table
+-- Create the Compounds table with additional molecular properties
 CREATE TABLE IF NOT EXISTS Compounds (
     id VARCHAR(36) PRIMARY KEY,
     user_id VARCHAR(36) REFERENCES Users(id) NOT NULL,
     name VARCHAR(255) NOT NULL,
     smiles TEXT NOT NULL,
     inchi_key VARCHAR(27),
+    chembl_id VARCHAR(20),
     pubchem_cid VARCHAR(20),
     molecular_weight FLOAT,
     tpsa FLOAT,
     hbd INTEGER,
     hba INTEGER,
     num_atoms INTEGER,
+    num_heavy_atoms INTEGER,
+    num_rotatable_bonds INTEGER,
+    num_rings INTEGER,
+    qed FLOAT,
+    logp FLOAT,
+    kingdom VARCHAR(100),
+    superclass VARCHAR(100),
+    class VARCHAR(100),
+    subclass VARCHAR(100),
     status TEXT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -51,7 +57,7 @@ CREATE TABLE IF NOT EXISTS Analysis_Jobs (
     user_id VARCHAR(36) REFERENCES Users(id) NOT NULL,
     status TEXT NOT NULL,
     progress FLOAT NOT NULL DEFAULT 0.0,
-    similarity_threshold INTEGER NOT NULL,
+    similarity_threshold INTEGER NOT NULL DEFAULT 80,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -61,12 +67,12 @@ CREATE TABLE IF NOT EXISTS Efficiency_Metrics (
     id VARCHAR(36) PRIMARY KEY,
     analysis_job_id VARCHAR(36) REFERENCES Analysis_Jobs(id),
     compound_id VARCHAR(36) REFERENCES Compounds(id),
+    activity_id VARCHAR(36) REFERENCES Activities(id),
     sei FLOAT NULL,
     bei FLOAT NULL,
     nsei FLOAT NULL,
     nbei FLOAT NULL,
-    llep FLOAT NULL,
-    lle FLOAT NULL,
+    p_activity FLOAT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
