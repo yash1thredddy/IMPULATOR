@@ -5,107 +5,145 @@ services:
     image: postgres:latest
     container_name: postgresql
     environment:
-      - POSTGRES_USER=impulser
-      - POSTGRES_PASSWORD=impulser
-      - POSTGRES_DB=impulser_db
+      - POSTGRES_USER=impulsor
+      - POSTGRES_PASSWORD=impulsor
+      - POSTGRES_DB=impulsor_db
     volumes:
       - postgresql_data:/var/lib/postgresql/data
     networks:
-      - impulser_network
+      - impulsor_network
+    ports:
+      - "5432:5432"
+
+  mongodb:
+    image: mongo:latest
+    container_name: mongodb
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - impulsor_network
+    ports:
+      - "27017:27017"
+
+  redis:
+    image: redis:latest
+    container_name: redis
+    volumes:
+      - redis_data:/data
+    networks:
+      - impulsor_network
+    ports:
+      - "6379:6379"
 
   rabbitmq:
-    image: rabbitmq:latest
+    image: rabbitmq:3-management
     container_name: rabbitmq
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     networks:
-      - impulser_network
+      - impulsor_network
+    ports:
+      - "5672:5672"
+      - "15672:15672"
 
   api_gateway:
-    image: python:3.11-slim-bullseye
+    build:
+      context: ../services/api_gateway
+      dockerfile: Dockerfile
     container_name: api_gateway
-    volumes:
-      - ./services/api_gateway:/app
-    working_dir: /app
-    command: ["python", "app.py"]
     networks:
-      - impulser_network
+      - impulsor_network
+    ports:
+      - "8000:8000"
     depends_on:
+      - postgresql
       - rabbitmq
+    environment:
+      - POSTGRES_DB=impulsor_db
+      - POSTGRES_USER=impulsor
+      - POSTGRES_PASSWORD=impulsor
+      - POSTGRES_HOST=postgresql
+      - RABBITMQ_HOST=rabbitmq
 
   compound_service:
-    image: python:3.11-slim-bullseye
+    build:
+      context: ../services/compound_service
+      dockerfile: Dockerfile
     container_name: compound_service
-    volumes:
-      - ./services/compound_service:/app
-    working_dir: /app
-    command: ["python", "app.py"]
     networks:
-      - impulser_network
+      - impulsor_network
+    ports:
+      - "8001:8001"
     depends_on:
       - postgresql
       - rabbitmq
+    environment:
+      - POSTGRES_DB=impulsor_db
+      - POSTGRES_USER=impulsor
+      - POSTGRES_PASSWORD=impulsor
+      - POSTGRES_HOST=postgresql
+      - RABBITMQ_HOST=rabbitmq
 
   analysis_service:
-    image: python:3.11-slim-bullseye
+    build:
+      context: ../services/analysis_service
+      dockerfile: Dockerfile
     container_name: analysis_service
-    volumes:
-      - ./services/analysis_service:/app
-    working_dir: /app
-    command: ["python", "app.py"]
     networks:
-      - impulser_network
+      - impulsor_network
+    ports:
+      - "8002:8002"
     depends_on:
       - postgresql
+      - mongodb
       - rabbitmq
       - chembl_service
-      - pubchem_service
+    environment:
+      - POSTGRES_DB=impulsor_db
+      - POSTGRES_USER=impulsor
+      - POSTGRES_PASSWORD=impulsor
+      - POSTGRES_HOST=postgresql
+      - MONGO_URI=mongodb://mongodb:27017/
+      - MONGO_DB_NAME=impulsor_db
+      - RABBITMQ_HOST=rabbitmq
+      - CHEMBL_SERVICE_URL=http://chembl_service:8003
 
   visualization_service:
-    image: python:3.11-slim-bullseye
+    build:
+      context: ../services/visualization_service
+      dockerfile: Dockerfile
     container_name: visualization_service
-    volumes:
-      - ./services/visualization_service:/app
-    working_dir: /app
-    command: ["python", "app.py"]
     networks:
-      - impulser_network
+      - impulsor_network
+    ports:
+      - "8004:8004"
     depends_on:
-      - rabbitmq
+      - mongodb
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/
+      - MONGO_DB_NAME=impulsor_db
 
   chembl_service:
-    image: python:3.11-slim-bullseye
+    build:
+      context: ../services/chembl_service
+      dockerfile: Dockerfile
     container_name: chembl_service
-    volumes:
-      - ./services/chembl_service:/app
-    working_dir: /app
-    command: ["python", "app.py"]
     networks:
-      - impulser_network
-
-  pubchem_service:
-    image: python:3.11-slim-bullseye
-    container_name: pubchem_service
-    volumes:
-      - ./services/pubchem_service:/app
-    working_dir: /app
-    command: ["python", "app.py"]
-    networks:
-      - impulser_network
-
-  pdb_service:
-    image: python:3.11-slim-bullseye
-    container_name: pdb_service
-    volumes:
-      - ./services/pdb_service:/app
-    working_dir: /app
-    command: ["python", "app.py"]
-    networks:
-      - impulser_network
+      - impulsor_network
+    ports:
+      - "8003:8003"
+    depends_on:
+      - redis
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
 
 volumes:
   postgresql_data:
+  mongodb_data:
+  redis_data:
   rabbitmq_data:
 
 networks:
-  impulser_network:
+  impulsor_network:
