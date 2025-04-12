@@ -187,11 +187,22 @@ class CompoundService:
         for key, value in properties.items():
             compound_data[key] = value
         
-        # Get classification data if InChIKey is available
+        # In compound_service.py, after calculating properties but before classification:
+
+        # Try to find ChEMBL ID for the compound
         if 'inchi_key' in properties and properties['inchi_key']:
-            classification = self.chembl_client.get_compound_classification(properties['inchi_key'])
-            if classification:
-                compound_data.update(classification)
+            # First try to look up the compound by InChIKey
+            mol_details = self.chembl_client.get_molecule_data_by_inchi_key(properties['inchi_key'])
+            if mol_details and 'chembl_id' in mol_details:
+                compound_data['chembl_id'] = mol_details['chembl_id']
+            else:
+                # If not found by InChIKey, try by SMILES similarity with 100% match
+                similar_compounds = self.chembl_client.get_similar_compounds(
+                    smiles=compound_data["smiles"],
+                    similarity_threshold=100  # Exact match only
+                )
+                if similar_compounds and len(similar_compounds) > 0:
+                    compound_data['chembl_id'] = similar_compounds[0]['chembl_id']
 
         try:
             with self.db_conn.cursor() as cur:
