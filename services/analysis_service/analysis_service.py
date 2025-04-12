@@ -223,6 +223,22 @@ class AnalysisServicer:
             Dict[str, float]: Dictionary of efficiency metrics
         """
         try:
+            # Ensure all values are valid numbers
+            activity_value = float(activity_value) if activity_value is not None else 0
+            molecular_weight = float(molecular_weight) if molecular_weight is not None else 0
+            tpsa = float(tpsa) if tpsa is not None else 0
+            num_heavy_atoms = int(num_heavy_atoms) if num_heavy_atoms is not None else 0
+            num_polar_atoms = int(num_polar_atoms) if num_polar_atoms is not None else 1  # Avoid division by zero
+            
+            if activity_value <= 0 or molecular_weight <= 0 or tpsa <= 0:
+                return {
+                    "sei": 0,
+                    "bei": 0,
+                    "nsei": 0,
+                    "nbei": 0,
+                    "pActivity": 0
+                }
+            
             # Convert nM to M
             activity_M = activity_value * 1e-9
             
@@ -384,22 +400,33 @@ class AnalysisServicer:
                 # Extract compound details
                 c_id, smiles, molecular_weight, tpsa, num_heavy_atoms, chembl_id = compound
                 
-                # Check if we have a ChEMBL ID
+                # If no ChEMBL ID, store empty results and mark as completed
                 if not chembl_id:
-                    logger.error(f"No ChEMBL ID found for compound: {compound_id}")
-                    self.update_job_status(job_id, "failed")
-                    return False
+                    logger.warning(f"No ChEMBL ID found for compound: {compound_id}. Storing empty results.")
+                    
+                    # Store results with empty activities
+                    results = {
+                        "compound_id": compound_id,
+                        "chembl_id": None,
+                        "activities": [],
+                        "processing_date": datetime.now().isoformat()
+                    }
+                    
+                    self.store_analysis_results(compound_id, results)
+                    
+                    # Update job status to completed
+                    self.update_job_status(job_id, "completed", 1.0)
+                    
+                    # Send to visualization queue anyway
+                    self.send_to_visualization_queue(job_id, compound_id)
+                    
+                    return True
                 
                 # Get activities from ChEMBL
                 activities = self.chembl_client.get_compound_activities(
                     chembl_id=chembl_id,
                     activity_types=self.config.ACTIVITY_TYPES
                 )
-                
-                if not activities:
-                    logger.warning(f"No activities found for compound: {compound_id}")
-                    self.update_job_status(job_id, "completed", 1.0)
-                    return True
                 
                 # Update job status
                 self.update_job_status(job_id, "processing", 0.5)
@@ -413,32 +440,41 @@ class AnalysisServicer:
                 for activity in activities:
                     try:
                         # Check if we have a valid activity value
-                        if 'value' in activity and activity['value'] > 0:
-                            # Calculate efficiency metrics
-                            metrics = self.calculate_efficiency_metrics(
-                                activity_value=activity['value'],
-                                molecular_weight=molecular_weight,
-                                tpsa=tpsa,
-                                num_heavy_atoms=num_heavy_atoms,
-                                num_polar_atoms=num_polar_atoms
-                            )
-                            
-                            # Create processed activity
-                            processed_activity = {
-                                "target_id": activity.get('target_id', ''),
-                                "activity_type": activity.get('activity_type', ''),
-                                "relation": activity.get('relation', '='),
-                                "value": activity.get('value', 0),
-                                "units": activity.get('units', 'nM'),
-                                "metrics": metrics
-                            }
-                            
-                            processed_activities.append(processed_activity)
+                        if 'value' in activity:
+                            try:
+                                # Convert value to float and check if positive
+                                activity_value = float(activity['value']) if activity['value'] is not None else 0
+                                if activity_value <= 0:
+                                    continue
+                                    
+                                # Calculate efficiency metrics
+                                metrics = self.calculate_efficiency_metrics(
+                                    activity_value=activity_value,
+                                    molecular_weight=molecular_weight,
+                                    tpsa=tpsa,
+                                    num_heavy_atoms=num_heavy_atoms,
+                                    num_polar_atoms=num_polar_atoms
+                                )
+                                
+                                # Create processed activity
+                                processed_activity = {
+                                    "target_id": activity.get('target_id', ''),
+                                    "activity_type": activity.get('activity_type', ''),
+                                    "relation": activity.get('relation', '='),
+                                    "value": activity_value,
+                                    "units": activity.get('units', 'nM'),
+                                    "metrics": metrics
+                                }
+                                
+                                processed_activities.append(processed_activity)
+                            except (ValueError, TypeError) as e:
+                                logger.warning(f"Skipping activity with invalid value: {activity.get('value')}: {e}")
+                                continue
                     except Exception as activity_error:
                         logger.error(f"Error processing activity: {activity_error}")
                         # Continue with other activities
                 
-                # Store results in MongoDB
+                # Store results in MongoDB (even if empty)
                 results = {
                     "compound_id": compound_id,
                     "chembl_id": chembl_id,
