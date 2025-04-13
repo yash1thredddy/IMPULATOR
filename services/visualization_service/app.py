@@ -114,22 +114,24 @@ def start_visualization_queue_consumer():
         
         queue_name = config.VISUALIZATION_QUEUE
         channel.queue_declare(queue=queue_name, durable=True)
-        
+                
         def callback(ch, method, properties, body):
             try:
                 message = json.loads(body)
                 logger.info(f"Processing visualization message: {message}")
                 
-                # Get compound ID from message
+                # Get compound ID and job ID from message
                 compound_id = message.get("compound_id")
-                if not compound_id:
-                    logger.error("Invalid message: missing compound_id")
+                job_id = message.get("job_id")  # Make sure to use job_id from the message
+                
+                if not compound_id or not job_id:
+                    logger.error("Invalid message: missing compound_id or job_id")
                     ch.basic_ack(delivery_tag=method.delivery_tag)
                     return
                 
-                # Generate and cache visualizations
-                service.generate_efficiency_plots(compound_id)
-                service.generate_activity_plot(compound_id)
+                # Generate and cache visualizations - use job_id instead of compound_id for data retrieval
+                service.generate_efficiency_plots(job_id, compound_id)  # Pass both job_id and compound_id
+                service.generate_activity_plot(job_id, compound_id)     # Pass both job_id and compound_id
                 
                 # Acknowledge message
                 ch.basic_ack(delivery_tag=method.delivery_tag)

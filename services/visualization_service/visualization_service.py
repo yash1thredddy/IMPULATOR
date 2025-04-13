@@ -200,7 +200,7 @@ class VisualizationService:
             logger.error(f"Error extracting plot data: {str(e)}")
             return []
             
-    def generate_efficiency_plots(self, compound_id: str) -> Optional[Dict[str, Any]]:
+    def generate_efficiency_plots(self, job_id: str, compound_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Generate efficiency index plots (SEI vs BEI, NSEI vs nBEI).
         
@@ -212,7 +212,7 @@ class VisualizationService:
         """
         try:
             # Get data
-            data = self.get_visualization_data(compound_id)
+            data = self.get_visualization_data(job_id, compound_id)
             if not data:
                 logger.warning(f"No data found for compound {compound_id}")
                 return None
@@ -293,7 +293,7 @@ class VisualizationService:
             logger.error(f"Error generating efficiency plots: {str(e)}")
             return None
             
-    def generate_activity_plot(self, compound_id: str) -> Optional[Dict[str, Any]]:
+    def generate_activity_plot(self, job_id: str, compound_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Generate activity distribution plot.
         
@@ -305,7 +305,7 @@ class VisualizationService:
         """
         try:
             # Get data
-            data = self.get_visualization_data(compound_id)
+            data = self.get_visualization_data(job_id, compound_id)
             if not data:
                 logger.warning(f"No data found for compound {compound_id}")
                 return None

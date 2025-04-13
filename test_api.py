@@ -1,528 +1,177 @@
 #!/usr/bin/env python3
 import requests
+import json
+import time
 import sys
-import csv
-from typing import Dict, List, Optional
+from pprint import pprint
 
-class CompoundExporter:
-    def __init__(self, api_gateway_url: str = "http://localhost:8000"):
-        """
-        Initialize the Compound Exporter.
-        
-        Args:
-            api_gateway_url: Base URL for the API Gateway
-        """
-        self.base_url = api_gateway_url
-        self.token = None
-        self.test_user_id = "test_user"
-    
-    def login(self, email: Optional[str] = None, password: Optional[str] = None):
-        """
-        Authenticate and obtain JWT token.
-        
-        This method first attempts to login with the predefined test user.
-        
-        Returns:
-            bool: True if login successful, False otherwise
-        """
-        try:
-            # Simulate login using a hardcoded token for the test user
-            login_data = {
-                "email": "test@example.com",
-                "password": "testpassword"
-            }
-            
-            response = requests.post(
-                f"{self.base_url}/auth/login", 
-                json=login_data
-            )
-            
-            if response.status_code == 200:
-                self.token = response.json().get('token')
-                print("Login successful")
-                return True
-            else:
-                print(f"Login failed: {response.json().get('error', 'Unknown error')}")
-                return False
-        except Exception as e:
-            print(f"Login error: {e}")
-            return False
-    
-    def list_user_compounds(self) -> List[Dict]:
-        """
-        List compounds for the logged-in user.
-        
-        Returns:
-            List of compounds owned by the user
-        """
-        if not self.token:
-            print("Please login first.")
-            return []
-        
-        try:
-            response = requests.get(
-                f"{self.base_url}/users/{self.test_user_id}/compounds",
-                headers={"Authorization": f"Bearer {self.token}"}
-            )
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
-                print(f"Failed to retrieve compounds: {response.json().get('error', 'Unknown error')}")
-                return []
-        except Exception as e:
-            print(f"Error retrieving compounds: {e}")
-            return []
-    
-    def get_compound_details(self, compound_id: str) -> Optional[Dict]:
-        """
-        Get detailed information for a specific compound.
-        
-        Args:
-            compound_id: ID of the compound
-        
-        Returns:
-            Compound details or None if retrieval fails
-        """
-        if not self.token:
-            print("Please login first.")
-            return None
-        
-        try:
-            response = requests.get(
-                f"{self.base_url}/compounds/{compound_id}",
-                headers={"Authorization": f"Bearer {self.token}"}
-            )
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
-                print(f"Failed to retrieve compound details: {response.json().get('error', 'Unknown error')}")
-                return None
-        except Exception as e:
-            print(f"Error retrieving compound details: {e}")
-            return None
-    
-    def get_compound_activities(self, compound_id: str) -> Optional[Dict]:
-        """
-        Get analysis results for a compound.
-        
-        Args:
-            compound_id: ID of the compound
-        
-        Returns:
-            Analysis results or None if retrieval fails
-        """
-        if not self.token:
-            print("Please login first.")
-            return None
-        
-        try:
-            response = requests.get(
-                f"{self.base_url}/analysis/{compound_id}/results",
-                headers={"Authorization": f"Bearer {self.token}"}
-            )
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
-                print(f"Failed to retrieve compound activities: {response.json().get('error', 'Unknown error')}")
-                return None
-        except Exception as e:
-            print(f"Error retrieving compound activities: {e}")
-            return None
-    
-    def export_compound_to_csv(self, compound_id: str, output_filename: Optional[str] = None):
-        """
-        Export compound details and activities to a CSV file.
-        
-        Args:
-            compound_id: ID of the compound to export
-            output_filename: Optional custom filename. If not provided, uses compound name.
-        """
-        # Get compound details
-        compound_details = self.get_compound_details(compound_id)
-        if not compound_details:
-            print("Failed to retrieve compound details.")
-            return
-        
-        # Get compound activities
-        activities_data = self.get_compound_activities(compound_id)
-        if not activities_data:
-            print("Failed to retrieve compound activities.")
-            return
-        
-        # Prepare filename
-        compound_name = compound_details.get('name', 'compound')
-        filename = output_filename or f"{compound_name}_export.csv"
-        
-        try:
-            with open(filename, 'w', newline='') as csvfile:
-                # Compound details header and data
-                csvwriter = csv.writer(csvfile)
-                csvwriter.writerow(["Compound Details"])
-                for key, value in compound_details.items():
-                    csvwriter.writerow([key, value])
-                
-                # Separator
-                csvwriter.writerow([])
-                
-                # Activities header
-                csvwriter.writerow(["Compound Activities"])
-                csvwriter.writerow([
-                    "Target ID", 
-                    "Activity Type", 
-                    "Relation", 
-                    "Value", 
-                    "Units", 
-                    "SEI", 
-                    "BEI", 
-                    "NSEI", 
-                    "NBEI", 
-                    "p-Activity"
-                ])
-                
-                # Write activities
-                activities = activities_data.get('results', {}).get('activities', [])
-                for activity in activities:
-                    metrics = activity.get('metrics', {})
-                    csvwriter.writerow([
-                        activity.get('target_id', 'N/A'),
-                        activity.get('activity_type', 'N/A'),
-                        activity.get('relation', 'N/A'),
-                        activity.get('value', 'N/A'),
-                        activity.get('units', 'N/A'),
-                        metrics.get('sei', 'N/A'),
-                        metrics.get('bei', 'N/A'),
-                        metrics.get('nsei', 'N/A'),
-                        metrics.get('nbei', 'N/A'),
-                        metrics.get('pActivity', 'N/A')
-                    ])
-                
-                print(f"Exported compound data to {filename}")
-        except Exception as e:
-            print(f"Error exporting to CSV: {e}")
-    
-    def interactive_export(self):
-        """
-        Interactive export process for users.
-        """
-        # Login using test user
-        if not self.login():
-            print("Login failed. Exiting.")
-            return
-        
-        # List user compounds
-        compounds = self.list_user_compounds()
-        
-        if not compounds:
-            print("No compounds found.")
-            return
-        
-        # Display compounds
-        print("\nYour Compounds:")
-        for i, compound in enumerate(compounds, 1):
-            print(f"{i}. {compound.get('name', 'Unnamed Compound')} (ID: {compound['id']})")
-        
-        # Prompt for compound selection
-        while True:
-            try:
-                selection = input("\nEnter the number of the compound you want to export (or 'q' to quit): ")
-                
-                if selection.lower() == 'q':
-                    break
-                
-                index = int(selection) - 1
-                if 0 <= index < len(compounds):
-                    compound_id = compounds[index]['id']
-                    output_filename = input("Enter output filename (optional, press Enter for default): ")
-                    
-                    if output_filename:
-                        self.export_compound_to_csv(compound_id, output_filename)
-                    else:
-                        self.export_compound_to_csv(compound_id)
-                else:
-                    print("Invalid selection. Please try again.")
-            
-            except ValueError:
-                print("Please enter a valid number or 'q'.")
+# Configuration
+API_GATEWAY = "http://localhost:8000"
+TEST_USER_ID = "test_user"
+TEST_SMILES = "O=c1c(O)c(-c2ccc(O)c(O)c2)oc2cc(O)cc(O)c12"  # Quercetin
+TEST_NAME = "Quercetin"
 
-def main():
-    exporter = CompoundExporter()
-    exporter.interactive_export()
+# Helper function for API calls
+def api_call(method, endpoint, data=None, token=None):
+    url = f"{API_GATEWAY}{endpoint}"
+    headers = {'Content-Type': 'application/json'}
+    
+    if token:
+        headers['Authorization'] = f"Bearer {token}"
+    
+    if method == 'GET':
+        response = requests.get(url, headers=headers)
+    elif method == 'POST':
+        response = requests.post(url, headers=headers, data=json.dumps(data))
+    elif method == 'PUT':
+        response = requests.put(url, headers=headers, data=json.dumps(data))
+    elif method == 'DELETE':
+        response = requests.delete(url, headers=headers)
+    else:
+        raise ValueError(f"Unsupported method: {method}")
+    
+    return response
+
+def run_tests():
+    print("Testing IMPULATOR API Gateway...")
+    
+    # Test 1: Health check
+    print("\n1. Testing health check endpoint...")
+    response = api_call('GET', '/health')
+    print(f"Status code: {response.status_code}")
+    print(f"Response: {response.json()}")
+    
+    # Test 2: User registration
+    print("\n2. Testing user registration...")
+    user_data = {
+        "username": f"testuser_{int(time.time())}",
+        "email": f"test_{int(time.time())}@example.com",
+        "password": "testpassword"
+    }
+    response = api_call('POST', '/auth/register', user_data)
+    print(f"Status code: {response.status_code}")
+    print(f"Response: {response.json()}")
+    
+    # Test 3: User login
+    print("\n3. Testing user login...")
+    login_data = {
+        "email": user_data["email"],
+        "password": user_data["password"]
+    }
+    response = api_call('POST', '/auth/login', login_data)
+    print(f"Status code: {response.status_code}")
+    result = response.json()
+    print(f"Response: {result}")
+    
+    if 'token' not in result:
+        print("ERROR: Login failed, no token received")
+        return
+    
+    token = result['token']
+    
+    # Test 4: Create a compound
+    print("\n4. Testing compound creation...")
+    compound_data = {
+        "name": TEST_NAME,
+        "smiles": TEST_SMILES,
+        "user_id": TEST_USER_ID,
+        "similarity_threshold": 80
+    }
+    response = api_call('POST', '/compounds', compound_data, token)
+    print(f"Status code: {response.status_code}")
+    result = response.json()
+    print(f"Response: {result}")
+    
+    if 'id' not in result:
+        print("ERROR: Compound creation failed, no ID received")
+        return
+    
+    compound_id = result['id']
+    
+    # Test 5: Get compound details
+    print(f"\n5. Testing get compound details for {compound_id}...")
+    
+    # Wait a bit for the compound to be processed
+    print("Waiting for compound to be processed...")
+    time.sleep(5)
+    
+    response = api_call('GET', f'/compounds/{compound_id}', token=token)
+    print(f"Status code: {response.status_code}")
+    print(f"Response: {json.dumps(response.json(), indent=2)}")
+    
+    # Test 6: Get job status
+    print("\n6. Testing job status retrieval...")
+    
+    # Extract job_id from compound response if available
+    compound_details = response.json()
+    job_id = compound_details.get('analysis_job_id')
+    
+    if not job_id:
+        print("No job ID found, trying to find from user compounds...")
+        response = api_call('GET', f'/users/{TEST_USER_ID}/compounds', token=token)
+        compounds = response.json()
+        for comp in compounds:
+            if comp.get('id') == compound_id and 'job_id' in comp:
+                job_id = comp.get('job_id')
+                break
+    
+    if job_id:
+        print(f"Found job ID: {job_id}")
+        response = api_call('GET', f'/analysis/{job_id}', token=token)
+        print(f"Status code: {response.status_code}")
+        print(f"Response: {json.dumps(response.json(), indent=2)}")
+    else:
+        print("ERROR: No job ID found")
+    
+    # Test 7: Monitor job progress for a while
+    if job_id:
+        print("\n7. Monitoring job progress...")
+        max_attempts = 30
+        for i in range(max_attempts):
+            response = api_call('GET', f'/analysis/{job_id}', token=token)
+            job_status = response.json()
+            status = job_status.get('status')
+            progress = job_status.get('progress', 0)
+            
+            print(f"Job status: {status}, Progress: {progress:.1%}")
+            
+            if status == 'completed':
+                print("Job completed successfully!")
+                break
+            elif status == 'failed':
+                print("Job failed!")
+                break
+            
+            if i < max_attempts - 1:
+                print("Waiting 10 seconds before checking again...")
+                time.sleep(10)
+        
+        # Test 8: Get analysis results
+        print("\n8. Getting analysis results...")
+        response = api_call('GET', f'/analysis/{compound_id}/results', token=token)
+        print(f"Status code: {response.status_code}")
+        if response.status_code == 200:
+            # Print a summary instead of the full results which can be very large
+            results = response.json()
+            activities_count = len(results.get('results', {}).get('activities', []))
+            print(f"Retrieved analysis results with {activities_count} activities")
+        else:
+            print(f"Response: {response.text}")
+        
+        # Test 9: Get visualizations
+        print("\n9. Getting visualizations...")
+        response = api_call('GET', f'/visualizations/{compound_id}/efficiency-plots', token=token)
+        print(f"Efficiency plots status code: {response.status_code}")
+        if response.status_code == 200:
+            plot_keys = response.json().keys()
+            print(f"Retrieved visualization plots: {', '.join(plot_keys)}")
+        
+        response = api_call('GET', f'/visualizations/{compound_id}/activity-plot', token=token)
+        print(f"Activity plot status code: {response.status_code}")
+        if response.status_code == 200:
+            print("Retrieved activity plot data")
+    
+    print("\nTests completed!")
 
 if __name__ == "__main__":
-    main()
-#!/usr/bin/env python3
-import requests
-import sys
-import csv
-from typing import Dict, List, Optional
-
-class CompoundExporter:
-    def __init__(self, api_gateway_url: str = "http://localhost:8000"):
-        """
-        Initialize the Compound Exporter.
-        
-        Args:
-            api_gateway_url: Base URL for the API Gateway
-        """
-        self.base_url = api_gateway_url
-        self.token = None
-    
-    def login(self, email: Optional[str] = None, password: Optional[str] = None):
-        """
-        Authenticate and obtain JWT token.
-        
-        Args:
-            email: User email (optional)
-            password: User password (optional)
-        
-        Returns:
-            bool: True if login successful, False otherwise
-        """
-        # Default test user credentials
-        default_email = "test_1744445341@example.com "
-        default_password = "testpassword"
-        
-        # Use provided credentials or fall back to defaults
-        login_email = email or default_email
-        login_password = password or default_password
-        
-        try:
-            response = requests.post(
-                f"{self.base_url}/auth/login", 
-                json={"email": login_email, "password": login_password}
-            )
-            
-            if response.status_code == 200:
-                self.token = response.json().get('token')
-                return True
-            else:
-                print(f"Login failed: {response.json().get('error', 'Unknown error')}")
-                
-                # If default credentials fail, try alternatives
-                if login_email == default_email and login_password == default_password:
-                    print("Attempting alternative test user credentials...")
-                    try:
-                        response = requests.post(
-                            f"{self.base_url}/auth/login", 
-                            json={"email": "test_user@example.com", "password": "test_password"}
-                        )
-                        
-                        if response.status_code == 200:
-                            self.token = response.json().get('token')
-                            return True
-                    except Exception as alt_e:
-                        print(f"Alternative login attempt failed: {alt_e}")
-                
-                return False
-        except Exception as e:
-            print(f"Login error: {e}")
-            return False
-    
-    def list_user_compounds(self) -> List[Dict]:
-        """
-        List compounds for the logged-in user.
-        
-        Returns:
-            List of compounds owned by the user
-        """
-        if not self.token:
-            print("Please login first.")
-            return []
-        
-        try:
-            response = requests.get(
-                f"{self.base_url}/users/test_user/compounds",
-                headers={"Authorization": f"Bearer {self.token}"}
-            )
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
-                print(f"Failed to retrieve compounds: {response.json().get('error', 'Unknown error')}")
-                return []
-        except Exception as e:
-            print(f"Error retrieving compounds: {e}")
-            return []
-    
-    def get_compound_details(self, compound_id: str) -> Optional[Dict]:
-        """
-        Get detailed information for a specific compound.
-        
-        Args:
-            compound_id: ID of the compound
-        
-        Returns:
-            Compound details or None if retrieval fails
-        """
-        if not self.token:
-            print("Please login first.")
-            return None
-        
-        try:
-            response = requests.get(
-                f"{self.base_url}/compounds/{compound_id}",
-                headers={"Authorization": f"Bearer {self.token}"}
-            )
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
-                print(f"Failed to retrieve compound details: {response.json().get('error', 'Unknown error')}")
-                return None
-        except Exception as e:
-            print(f"Error retrieving compound details: {e}")
-            return None
-    
-    def get_compound_activities(self, compound_id: str) -> Optional[Dict]:
-        """
-        Get analysis results for a compound.
-        
-        Args:
-            compound_id: ID of the compound
-        
-        Returns:
-            Analysis results or None if retrieval fails
-        """
-        if not self.token:
-            print("Please login first.")
-            return None
-        
-        try:
-            response = requests.get(
-                f"{self.base_url}/analysis/{compound_id}/results",
-                headers={"Authorization": f"Bearer {self.token}"}
-            )
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
-                print(f"Failed to retrieve compound activities: {response.json().get('error', 'Unknown error')}")
-                return None
-        except Exception as e:
-            print(f"Error retrieving compound activities: {e}")
-            return None
-    
-    def export_compound_to_csv(self, compound_id: str, output_filename: Optional[str] = None):
-        """
-        Export compound details and activities to a CSV file.
-        
-        Args:
-            compound_id: ID of the compound to export
-            output_filename: Optional custom filename. If not provided, uses compound name.
-        """
-        # Get compound details
-        compound_details = self.get_compound_details(compound_id)
-        if not compound_details:
-            print("Failed to retrieve compound details.")
-            return
-        
-        # Get compound activities
-        activities_data = self.get_compound_activities(compound_id)
-        if not activities_data:
-            print("Failed to retrieve compound activities.")
-            return
-        
-        # Prepare filename
-        compound_name = compound_details.get('name', 'compound')
-        filename = output_filename or f"{compound_name}_export.csv"
-        
-        try:
-            with open(filename, 'w', newline='') as csvfile:
-                # Compound details header and data
-                csvwriter = csv.writer(csvfile)
-                csvwriter.writerow(["Compound Details"])
-                for key, value in compound_details.items():
-                    csvwriter.writerow([key, value])
-                
-                # Separator
-                csvwriter.writerow([])
-                
-                # Activities header
-                csvwriter.writerow(["Compound Activities"])
-                csvwriter.writerow([
-                    "Target ID", 
-                    "Activity Type", 
-                    "Relation", 
-                    "Value", 
-                    "Units", 
-                    "SEI", 
-                    "BEI", 
-                    "NSEI", 
-                    "NBEI", 
-                    "p-Activity"
-                ])
-                
-                # Write activities
-                activities = activities_data.get('results', {}).get('activities', [])
-                for activity in activities:
-                    metrics = activity.get('metrics', {})
-                    csvwriter.writerow([
-                        activity.get('target_id', 'N/A'),
-                        activity.get('activity_type', 'N/A'),
-                        activity.get('relation', 'N/A'),
-                        activity.get('value', 'N/A'),
-                        activity.get('units', 'N/A'),
-                        metrics.get('sei', 'N/A'),
-                        metrics.get('bei', 'N/A'),
-                        metrics.get('nsei', 'N/A'),
-                        metrics.get('nbei', 'N/A'),
-                        metrics.get('pActivity', 'N/A')
-                    ])
-                
-                print(f"Exported compound data to {filename}")
-        except Exception as e:
-            print(f"Error exporting to CSV: {e}")
-    
-    def interactive_export(self):
-        """
-        Interactive export process for users.
-        """
-        # Login with test credentials
-        if not self.login("test_1744445341@example.com ", "testpassword"):
-            print("Login failed. Exiting.")
-            return
-        
-        # List user compounds
-        compounds = self.list_user_compounds()
-        
-        if not compounds:
-            print("No compounds found.")
-            return
-        
-        # Display compounds
-        print("\nYour Compounds:")
-        for i, compound in enumerate(compounds, 1):
-            print(f"{i}. {compound.get('name', 'Unnamed Compound')} (ID: {compound['id']})")
-        
-        # Prompt for compound selection
-        while True:
-            try:
-                selection = input("\nEnter the number of the compound you want to export (or 'q' to quit): ")
-                
-                if selection.lower() == 'q':
-                    break
-                
-                index = int(selection) - 1
-                if 0 <= index < len(compounds):
-                    compound_id = compounds[index]['id']
-                    output_filename = input("Enter output filename (optional, press Enter for default): ")
-                    
-                    if output_filename:
-                        self.export_compound_to_csv(compound_id, output_filename)
-                    else:
-                        self.export_compound_to_csv(compound_id)
-                else:
-                    print("Invalid selection. Please try again.")
-            
-            except ValueError:
-                print("Please enter a valid number or 'q'.")
-
-def main():
-    exporter = CompoundExporter()
-    exporter.interactive_export()
-
-if __name__ == "__main__":
-    main()
+    run_tests()

@@ -69,7 +69,7 @@ async def create_compound(compound: CompoundCreate, current_user: str = Depends(
     """Create a new compound."""
     try:
         # Convert Pydantic model to dict
-        compound_data = compound.dict()
+        compound_data = compound.model_dump()
         
         # Use the authenticated user if not specified
         if not compound_data.get("user_id"):
@@ -104,7 +104,7 @@ async def update_compound(compound_id: str, compound: CompoundUpdate, current_us
     """Update a compound."""
     try:
         # Convert Pydantic model to dict, excluding None values
-        update_data = {k: v for k, v in compound.dict().items() if v is not None}
+        update_data = {k: v for k, v in compound.model_dump().items() if v is not None}
         
         success, error = service.update_compound(compound_id, update_data)
         if success:

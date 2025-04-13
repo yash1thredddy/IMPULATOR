@@ -123,9 +123,15 @@ services:
       - "8004:8004"
     depends_on:
       - mongodb
+      - rabbitmq
     environment:
       - MONGO_URI=mongodb://mongodb:27017/
       - MONGO_DB_NAME=impulsor_db
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - VISUALIZATION_QUEUE=visualization-queue
+
+
 
   chembl_service:
     build:

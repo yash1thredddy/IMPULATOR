@@ -90,15 +90,74 @@ async def get_analysis_job(job_id: str, current_user: str = Depends(get_current_
         logger.error(f"Error retrieving job {job_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# In analysis_service/app.py, update the get_analysis_results function:
+
 @app.get("/analysis/{compound_id}/results")
 async def get_analysis_results(compound_id: str, current_user: str = Depends(get_current_user)):
     """Get the analysis results for a compound."""
     try:
-        results = service.get_analysis_results(compound_id)
-        if results:
-            return results
-        else:
-            raise HTTPException(status_code=404, detail="No results found for this compound")
+        # First try to find if this compound is a primary compound in a job
+        job = None
+        with service.postgres_conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT j.id 
+                FROM Analysis_Jobs j 
+                WHERE j.compound_id = %s
+                """,
+                (compound_id,)
+            )
+            job = cur.fetchone()
+        
+        if job:
+            # Found a job where this compound is primary
+            job_id = job[0]
+            results = service.get_analysis_results(job_id)
+            if results:
+                return results
+        
+        # If not found as primary compound, try to find it in any job
+        with service.postgres_conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT r.job_id  
+                FROM Compound_Job_Relations r
+                WHERE r.compound_id = %s
+                """,
+                (compound_id,)
+            )
+            relation = cur.fetchone()
+            
+            if relation:
+                job_id = relation[0]
+                # Now get the analysis results by job_id
+                service.connect_to_mongo()
+                collection = service.mongo_db["analysis_results"]
+                
+                # Look for this compound in the primary_compound
+                result = collection.find_one({
+                    "job_id": job_id,
+                    "$or": [
+                        {"primary_compound.compound_id": compound_id},
+                        {"similar_compounds.compound_id": compound_id}
+                    ]
+                })
+                
+                if result:
+                    # Extract just the data for this compound
+                    if result.get("primary_compound", {}).get("compound_id") == compound_id:
+                        return result["primary_compound"]
+                    else:
+                        # Find in similar compounds
+                        for comp in result.get("similar_compounds", []):
+                            if comp.get("compound_id") == compound_id:
+                                return comp
+        
+        # If we get here, no results were found
+        logger.warning(f"No results found for compound {compound_id}")
+        raise HTTPException(status_code=404, detail="No results found for this compound")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error retrieving results for compound {compound_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
