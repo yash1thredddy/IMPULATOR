@@ -309,14 +309,16 @@ class AnalysisServicer:
                 except:
                     pass
             return False
-            
-    def store_analysis_results(self, compound_id: str, results: Dict[str, Any]) -> Optional[str]:
+                
+    def store_analysis_results(self, job_id: str, compound_id: str, results: Dict[str, Any], is_primary: bool = False) -> Optional[str]:
         """
-        Store analysis results in MongoDB.
+        Store analysis results in MongoDB by job ID instead of compound ID.
         
         Args:
+            job_id: The ID of the job
             compound_id: The ID of the compound
             results: Analysis results to store
+            is_primary: Whether this is the primary compound or a similar compound
             
         Returns:
             Optional[str]: ID of the inserted document or None if failed
@@ -324,41 +326,100 @@ class AnalysisServicer:
         try:
             self.connect_to_mongo()
             
-            # Check if results already exist for this compound
+            # Check if results already exist for this job
             collection = self.mongo_db["analysis_results"]
-            existing = collection.find_one({"compound_id": compound_id})
+            existing = collection.find_one({"job_id": job_id})
             
             if existing:
-                # Update existing results
-                result = collection.update_one(
-                    {"compound_id": compound_id},
-                    {"$set": {"results": results, "updated_at": datetime.now()}}
-                )
-                logger.info(f"Updated analysis results for compound {compound_id}")
+                if is_primary:
+                    # Update the primary compound data
+                    result = collection.update_one(
+                        {"job_id": job_id},
+                        {"$set": {
+                            "primary_compound": {
+                                "compound_id": compound_id,
+                                "results": results
+                            },
+                            "updated_at": datetime.now()
+                        }}
+                    )
+                else:
+                    # Add to or update similar compounds array
+                    # First check if this compound already exists in the array
+                    existing_similar = collection.find_one({
+                        "job_id": job_id,
+                        "similar_compounds.compound_id": compound_id
+                    })
+                    
+                    if existing_similar:
+                        # Update existing similar compound
+                        result = collection.update_one(
+                            {
+                                "job_id": job_id,
+                                "similar_compounds.compound_id": compound_id
+                            },
+                            {"$set": {
+                                "similar_compounds.$.results": results,
+                                "updated_at": datetime.now()
+                            }}
+                        )
+                    else:
+                        # Add new similar compound to array
+                        result = collection.update_one(
+                            {"job_id": job_id},
+                            {"$push": {
+                                "similar_compounds": {
+                                    "compound_id": compound_id,
+                                    "results": results
+                                }
+                            },
+                            "$set": {"updated_at": datetime.now()}}
+                        )
+                
+                logger.info(f"Updated analysis results for job {job_id}, compound {compound_id}")
                 return str(existing["_id"])
             else:
-                # Insert new results
-                result = collection.insert_one({
-                    "compound_id": compound_id,
-                    "results": results,
-                    "created_at": datetime.now(),
-                    "updated_at": datetime.now()
-                })
-                logger.info(f"Stored analysis results for compound {compound_id}")
+                # Create new document for this job
+                if is_primary:
+                    # Initialize document with primary compound
+                    result = collection.insert_one({
+                        "job_id": job_id,
+                        "primary_compound": {
+                            "compound_id": compound_id,
+                            "results": results
+                        },
+                        "similar_compounds": [],
+                        "created_at": datetime.now(),
+                        "updated_at": datetime.now()
+                    })
+                else:
+                    # Initialize document with a similar compound
+                    result = collection.insert_one({
+                        "job_id": job_id,
+                        "primary_compound": None,
+                        "similar_compounds": [{
+                            "compound_id": compound_id,
+                            "results": results
+                        }],
+                        "created_at": datetime.now(),
+                        "updated_at": datetime.now()
+                    })
+                
+                logger.info(f"Stored analysis results for job {job_id}, compound {compound_id}")
                 return str(result.inserted_id)
                 
         except Exception as e:
             logger.error(f"Error storing analysis results: {str(e)}")
             return None
             
-    def process_activities(self, job_id: str, compound_id: str, chembl_id: Optional[str] = None):
+    def process_activities(self, job_id: str, compound_id: str, is_primary: bool = True):
         """
         Process activities for a compound.
         
         Args:
             job_id: The job ID
             compound_id: The compound ID
-            chembl_id: Optional ChEMBL ID if already known
+            is_primary: Whether this is the primary compound
             
         Returns:
             bool: True if successful, False otherwise
@@ -367,40 +428,32 @@ class AnalysisServicer:
             self.connect_to_postgres()
             self.connect_to_mongo()
             
-            # Update job status to processing
-            self.update_job_status(job_id, "processing", 0.2)
+            # Update job status to processing if this is the primary compound
+            if is_primary:
+                self.update_job_status(job_id, "processing", 0.2)
             
             # Get the compound details from the database
             with self.postgres_conn.cursor() as cur:
-                if chembl_id:
-                    cur.execute(
-                        """
-                        SELECT id, smiles, molecular_weight, tpsa, num_heavy_atoms, chembl_id
-                        FROM Compounds 
-                        WHERE chembl_id = %s
-                        """,
-                        (chembl_id,)
-                    )
-                else:
-                    cur.execute(
-                        """
-                        SELECT id, smiles, molecular_weight, tpsa, num_heavy_atoms, chembl_id
-                        FROM Compounds 
-                        WHERE id = %s
-                        """,
-                        (compound_id,)
-                    )
+                cur.execute(
+                    """
+                    SELECT id, smiles, molecular_weight, tpsa, num_heavy_atoms, chembl_id
+                    FROM Compounds 
+                    WHERE id = %s
+                    """,
+                    (compound_id,)
+                )
                     
                 compound = cur.fetchone()
                 if not compound:
                     logger.error(f"Compound not found: {compound_id}")
-                    self.update_job_status(job_id, "failed")
+                    if is_primary:
+                        self.update_job_status(job_id, "failed")
                     return False
                 
                 # Extract compound details
                 c_id, smiles, molecular_weight, tpsa, num_heavy_atoms, chembl_id = compound
                 
-                # If no ChEMBL ID, store empty results and mark as completed
+                # If no ChEMBL ID, store empty results and mark as completed if primary
                 if not chembl_id:
                     logger.warning(f"No ChEMBL ID found for compound: {compound_id}. Storing empty results.")
                     
@@ -412,13 +465,21 @@ class AnalysisServicer:
                         "processing_date": datetime.now().isoformat()
                     }
                     
-                    self.store_analysis_results(compound_id, results)
+                    self.store_analysis_results(job_id, compound_id, results, is_primary)
                     
-                    # Update job status to completed
-                    self.update_job_status(job_id, "completed", 1.0)
-                    
-                    # Send to visualization queue anyway
-                    self.send_to_visualization_queue(job_id, compound_id)
+                    # If primary compound, update job status and continue with similar compounds
+                    if is_primary:
+                        # Update job status to processing
+                        self.update_job_status(job_id, "processing", 0.3)
+                        
+                        # Process similar compounds
+                        self.process_similar_compounds(job_id)
+                        
+                        # Send to visualization queue
+                        self.send_to_visualization_queue(job_id, compound_id)
+                        
+                        # Update job status to completed
+                        self.update_job_status(job_id, "completed", 1.0)
                     
                     return True
                 
@@ -428,8 +489,9 @@ class AnalysisServicer:
                     activity_types=self.config.ACTIVITY_TYPES
                 )
                 
-                # Update job status
-                self.update_job_status(job_id, "processing", 0.5)
+                # Update job status if this is the primary compound
+                if is_primary:
+                    self.update_job_status(job_id, "processing", 0.5)
                 
                 # Process each activity
                 processed_activities = []
@@ -474,7 +536,7 @@ class AnalysisServicer:
                         logger.error(f"Error processing activity: {activity_error}")
                         # Continue with other activities
                 
-                # Store results in MongoDB (even if empty)
+                # Store results in MongoDB
                 results = {
                     "compound_id": compound_id,
                     "chembl_id": chembl_id,
@@ -482,30 +544,85 @@ class AnalysisServicer:
                     "processing_date": datetime.now().isoformat()
                 }
                 
-                self.store_analysis_results(compound_id, results)
+                self.store_analysis_results(job_id, compound_id, results, is_primary)
                 
-                # Update job status
-                self.update_job_status(job_id, "processing", 0.8)
+                # If this is the primary compound, handle job completion and process similar compounds
+                if is_primary:
+                    # Update job status
+                    self.update_job_status(job_id, "processing", 0.7)
+                    
+                    # Process similar compounds
+                    self.process_similar_compounds(job_id)
+                    
+                    # Update job status
+                    self.update_job_status(job_id, "processing", 0.9)
+                    
+                    # Send message to visualization queue
+                    self.send_to_visualization_queue(job_id, compound_id)
+                    
+                    # Update job status to completed
+                    self.update_job_status(job_id, "completed", 1.0)
                 
-                # Send message to visualization queue
-                self.send_to_visualization_queue(job_id, compound_id)
-                
-                # Update job status to completed
-                self.update_job_status(job_id, "completed", 1.0)
                 return True
-                
+                    
         except Exception as e:
             logger.error(f"Error processing activities: {str(e)}")
-            self.update_job_status(job_id, "failed")
+            if is_primary:
+                self.update_job_status(job_id, "failed")
             return False
+
+    def process_similar_compounds(self, job_id: str):
+        """
+        Process all similar compounds for a job.
+        
+        Args:
+            job_id: The job ID
             
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            self.connect_to_postgres()
+            
+            # Get all similar compounds for this job that aren't primary compounds in other jobs
+            with self.postgres_conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT c.id, c.chembl_id 
+                    FROM Compounds c 
+                    JOIN Compound_Job_Relations r1 ON c.id = r1.compound_id
+                    WHERE r1.job_id = %s AND r1.is_primary = FALSE
+                    AND NOT EXISTS (
+                        SELECT 1 FROM Compound_Job_Relations r2 
+                        WHERE r2.compound_id = c.id AND r2.is_primary = TRUE AND r2.job_id != %s
+                    )
+                    """,
+                    (job_id, job_id)
+                )
+                similar_compounds = cur.fetchall()
+            
+            logger.info(f"Processing {len(similar_compounds)} similar compounds for job {job_id}")
+            
+            # Process each similar compound
+            for idx, (sim_id, sim_chembl_id) in enumerate(similar_compounds):
+                logger.info(f"Processing similar compound {idx+1}/{len(similar_compounds)}: {sim_id}")
+                if sim_chembl_id:  # Skip compounds without ChEMBL ID
+                    self.process_activities(job_id, sim_id, False)
+                else:
+                    logger.warning(f"Skipping similar compound {sim_id} - no ChEMBL ID")
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error processing similar compounds for job {job_id}: {str(e)}")
+            return False
+        
     def send_to_visualization_queue(self, job_id: str, compound_id: str):
         """
         Send a message to the visualization queue.
         
         Args:
             job_id: The job ID
-            compound_id: The compound ID
+            compound_id: The primary compound ID
             
         Returns:
             bool: True if successful, False otherwise
@@ -515,7 +632,8 @@ class AnalysisServicer:
             
             message = json.dumps({
                 "job_id": job_id,
-                "compound_id": compound_id
+                "compound_id": compound_id,
+                "timestamp": datetime.now().isoformat()
             })
             
             self.rabbitmq_channel.basic_publish(
@@ -527,7 +645,7 @@ class AnalysisServicer:
                 )
             )
             
-            logger.info(f"Sent message to visualization queue for job {job_id}")
+            logger.info(f"Sent message to visualization queue for job {job_id}, compound {compound_id}")
             return True
         except Exception as e:
             logger.error(f"Error sending message to visualization queue: {str(e)}")
@@ -550,34 +668,13 @@ class AnalysisServicer:
             
             job_id = message.get("job_id")
             compound_id = message.get("compound_id")
-            smiles = message.get("smiles")
-            similarity_threshold = message.get("similarity_threshold", 80)
             
             if not all([job_id, compound_id]):
                 logger.error("Invalid message: missing required fields")
                 return False
             
-            # Process activities for the compound
-            success = self.process_activities(job_id, compound_id)
-            
-            # Get similar compounds from the database
-            self.connect_to_postgres()
-            with self.postgres_conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT c.id, c.chembl_id 
-                    FROM Compounds c 
-                    JOIN Analysis_Jobs j ON c.user_id = j.user_id 
-                    WHERE j.id = %s AND c.id != %s
-                    """,
-                    (job_id, compound_id)
-                )
-                similar_compounds = cur.fetchall()
-            
-            # Process activities for each similar compound
-            for sim_id, sim_chembl_id in similar_compounds:
-                if sim_chembl_id:  # Skip compounds without ChEMBL ID
-                    self.process_activities(job_id, sim_id, sim_chembl_id)
+            # Process activities for the primary compound
+            success = self.process_activities(job_id, compound_id, True)
             
             return success
         except Exception as e:

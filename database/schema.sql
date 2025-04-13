@@ -1,3 +1,5 @@
+-- file: new_schema.sql
+
 -- Create the Users table
 CREATE TABLE IF NOT EXISTS Users (
     id VARCHAR(36) PRIMARY KEY,
@@ -9,7 +11,7 @@ CREATE TABLE IF NOT EXISTS Users (
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
--- Create the Compounds table with additional molecular properties
+-- Create the Compounds table with molecular properties
 CREATE TABLE IF NOT EXISTS Compounds (
     id VARCHAR(36) PRIMARY KEY,
     user_id VARCHAR(36) REFERENCES Users(id) NOT NULL,
@@ -37,20 +39,7 @@ CREATE TABLE IF NOT EXISTS Compounds (
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
--- Create the Activities table
-CREATE TABLE IF NOT EXISTS Activities (
-    id VARCHAR(36) PRIMARY KEY,
-    compound_id VARCHAR(36) REFERENCES Compounds(id),
-    target_id VARCHAR(50) NOT NULL,
-    standard_type VARCHAR(50) NOT NULL,
-    standard_relation VARCHAR(10) NOT NULL,
-    standard_value FLOAT NOT NULL,
-    standard_units VARCHAR(20) NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-
--- Create the AnalysisJobs table
+-- Create the Analysis_Jobs table
 CREATE TABLE IF NOT EXISTS Analysis_Jobs (
     id VARCHAR(36) PRIMARY KEY,
     compound_id VARCHAR(36) REFERENCES Compounds(id) NOT NULL,
@@ -62,17 +51,23 @@ CREATE TABLE IF NOT EXISTS Analysis_Jobs (
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
--- Create the Efficiency_Metrics table
-CREATE TABLE IF NOT EXISTS Efficiency_Metrics (
-    id VARCHAR(36) PRIMARY KEY,
-    analysis_job_id VARCHAR(36) REFERENCES Analysis_Jobs(id),
-    compound_id VARCHAR(36) REFERENCES Compounds(id),
-    activity_id VARCHAR(36) REFERENCES Activities(id),
-    sei FLOAT NULL,
-    bei FLOAT NULL,
-    nsei FLOAT NULL,
-    nbei FLOAT NULL,
-    p_activity FLOAT NULL,
+-- Create the Compound_Job_Relations table (new table)
+CREATE TABLE IF NOT EXISTS Compound_Job_Relations (
+    compound_id VARCHAR(36) REFERENCES Compounds(id) NOT NULL,
+    job_id VARCHAR(36) REFERENCES Analysis_Jobs(id) NOT NULL,
+    is_primary BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    PRIMARY KEY (compound_id, job_id)
 );
+
+-- Add indexes for performance
+CREATE INDEX IF NOT EXISTS idx_compound_job_relations_job_id ON Compound_Job_Relations(job_id);
+CREATE INDEX IF NOT EXISTS idx_compound_job_relations_compound_id ON Compound_Job_Relations(compound_id);
+CREATE INDEX IF NOT EXISTS idx_compound_job_relations_is_primary ON Compound_Job_Relations(is_primary);
+
+-- Create additional indexes on frequently queried fields
+CREATE INDEX IF NOT EXISTS idx_compounds_user_id ON Compounds(user_id);
+CREATE INDEX IF NOT EXISTS idx_compounds_chembl_id ON Compounds(chembl_id);
+CREATE INDEX IF NOT EXISTS idx_compounds_inchi_key ON Compounds(inchi_key);
+CREATE INDEX IF NOT EXISTS idx_analysis_jobs_user_id ON Analysis_Jobs(user_id);
+CREATE INDEX IF NOT EXISTS idx_analysis_jobs_status ON Analysis_Jobs(status);

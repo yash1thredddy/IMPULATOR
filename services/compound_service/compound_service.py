@@ -170,7 +170,7 @@ class CompoundService:
             self._connect_db()
         if not self.mq_channel:
             self._connect_rabbitmq()
-            
+                
         is_valid, error_message = self._validate_compound(compound_data)
         if not is_valid:
             logger.warning(f"Invalid compound data: {error_message}")
@@ -179,6 +179,24 @@ class CompoundService:
         # Check if the compound already exists
         exists, existing_id = self._check_compound_exists(compound_data["smiles"])
         if exists:
+            # Check if there's already an analysis job for this compound
+            with self.db_conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT j.id, j.status 
+                    FROM Analysis_Jobs j 
+                    JOIN Compound_Job_Relations r ON j.id = r.job_id
+                    WHERE r.compound_id = %s AND r.is_primary = TRUE
+                    """,
+                    (existing_id,)
+                )
+                existing_job = cur.fetchone()
+                
+                if existing_job and existing_job[1] in ['completed', 'processing']:
+                    # Return the existing job ID instead of creating a new one
+                    logger.info(f"Found existing analysis job {existing_job[0]} for compound {existing_id}")
+                    return True, existing_id
+            
             # Return the existing compound ID
             return True, existing_id
 
@@ -187,8 +205,6 @@ class CompoundService:
         for key, value in properties.items():
             compound_data[key] = value
         
-        # In compound_service.py, after calculating properties but before classification:
-
         # Try to find ChEMBL ID for the compound
         if 'inchi_key' in properties and properties['inchi_key']:
             # First try to look up the compound by InChIKey
@@ -225,7 +241,7 @@ class CompoundService:
                     "inchi_key", "pubchem_cid", "molecular_weight", 
                     "tpsa", "hbd", "hba", "num_atoms", "num_heavy_atoms",
                     "num_rotatable_bonds", "num_rings", "qed", "logp",
-                    "kingdom", "superclass", "class", "subclass"
+                    "kingdom", "superclass", "class", "subclass", "chembl_id"
                 ]
                 
                 for field in optional_fields:
@@ -255,10 +271,21 @@ class CompoundService:
                     VALUES (%s, %s, %s, %s, %s, %s)
                     """,
                     (job_id, compound_id, compound_data.get("user_id"), "pending", 0.0, 
-                     compound_data.get("similarity_threshold", 80))
+                    compound_data.get("similarity_threshold", 80))
                 )
                 self.db_conn.commit()
                 logger.info(f"Created analysis job with ID: {job_id} for compound ID: {compound_id}")
+                
+                # Create relation between compound and job (primary compound)
+                cur.execute(
+                    """
+                    INSERT INTO Compound_Job_Relations 
+                    (compound_id, job_id, is_primary, created_at) 
+                    VALUES (%s, %s, %s, NOW())
+                    """,
+                    (compound_id, job_id, True)
+                )
+                self.db_conn.commit()
 
                 # Get similar compounds using ChEMBL Service
                 similar_compounds = self.chembl_client.get_similar_compounds(
@@ -270,8 +297,9 @@ class CompoundService:
                 for similar_compound in similar_compounds:
                     # Extract and update properties
                     similar_properties = similar_compound.get('properties', {})
+                    similar_compound_id = str(uuid.uuid4())
                     similar_data = {
-                        "id": str(uuid.uuid4()),
+                        "id": similar_compound_id,
                         "user_id": compound_data.get("user_id"),
                         "name": similar_compound.get('molecule_name', 'Unknown'),
                         "smiles": similar_compound.get('canonical_smiles'),
@@ -315,9 +343,23 @@ class CompoundService:
                     
                     try:
                         cur.execute(
-                            f"INSERT INTO Compounds ({sim_column_names}) VALUES ({sim_placeholders})",
+                            f"INSERT INTO Compounds ({sim_column_names}) VALUES ({sim_placeholders}) RETURNING id",
                             sim_values
                         )
+                        
+                        # Get the ID of the inserted similar compound
+                        inserted_similar_id = cur.fetchone()[0]
+                        
+                        # Create a relationship between this similar compound and the original job
+                        cur.execute(
+                            """
+                            INSERT INTO Compound_Job_Relations 
+                            (compound_id, job_id, is_primary, created_at) 
+                            VALUES (%s, %s, %s, NOW())
+                            """,
+                            (inserted_similar_id, job_id, False)
+                        )
+                        
                     except Exception as e:
                         logger.error(f"Error inserting similar compound: {e}")
                         # Continue with other compounds

@@ -53,12 +53,13 @@ class VisualizationService:
             self.mongo_db = None
             logger.info("MongoDB connection closed")
             
-    def get_visualization_data(self, compound_id: str) -> Optional[Dict[str, Any]]:
+    def get_visualization_data(self, job_id: str, compound_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        Get visualization data for a compound.
+        Get visualization data for a job, optionally filtered by compound.
         
         Args:
-            compound_id: The ID of the compound
+            job_id: The ID of the job
+            compound_id: Optional ID of the compound to filter by
             
         Returns:
             Optional[Dict[str, Any]]: Visualization data from MongoDB
@@ -67,18 +68,61 @@ class VisualizationService:
             self.connect_to_mongo()
                 
             collection = self.mongo_db["analysis_results"]
-            result = collection.find_one({"compound_id": compound_id})
             
-            if result:
-                # Convert ObjectId to string for JSON serialization
-                result['_id'] = str(result['_id'])
-                return result
-            return None
-            
+            # If we're looking for a specific compound in a job
+            if compound_id:
+                # Check if it's the primary compound
+                primary = collection.find_one({
+                    "job_id": job_id,
+                    "primary_compound.compound_id": compound_id
+                })
+                
+                if primary:
+                    result = {
+                        "_id": str(primary["_id"]),
+                        "job_id": job_id,
+                        "compound_id": compound_id,
+                        "results": primary["primary_compound"]["results"]
+                    }
+                    return result
+                
+                # Check if it's a similar compound
+                similar = collection.find_one({
+                    "job_id": job_id,
+                    "similar_compounds.compound_id": compound_id
+                })
+                
+                if similar:
+                    # Find the specific similar compound
+                    for comp in similar["similar_compounds"]:
+                        if comp["compound_id"] == compound_id:
+                            result = {
+                                "_id": str(similar["_id"]),
+                                "job_id": job_id,
+                                "compound_id": compound_id,
+                                "results": comp["results"]
+                            }
+                            return result
+                
+                logger.warning(f"No visualization data found for job {job_id}, compound {compound_id}")
+                return None
+            else:
+                # Get the entire job document
+                result = collection.find_one({"job_id": job_id})
+                
+                if result:
+                    # Convert ObjectId to string for JSON serialization
+                    result['_id'] = str(result['_id'])
+                    logger.info(f"Retrieved visualization data for job {job_id}")
+                    return result
+                
+                logger.warning(f"No visualization data found for job {job_id}")
+                return None
+                
         except Exception as e:
             logger.error(f"Error retrieving visualization data: {str(e)}")
             return None
-            
+                
     def extract_plot_data(self, result: Dict[str, Any], plot_type: str) -> List[Dict[str, Any]]:
         """
         Extract data for a specific plot type from analysis results.

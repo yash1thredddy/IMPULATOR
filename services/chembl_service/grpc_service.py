@@ -175,16 +175,23 @@ class ChEMBLServicer(chembl_service_pb2_grpc.ChEMBLServiceServicer):
             processed_activities = []
             for activity in activities:
                 if all(key in activity for key in ['standard_value', 'standard_units', 'standard_type']):
+                    # Add type checking before converting to float
+                    standard_value = 0.0
+                    if activity.get('standard_value') is not None:
+                        try:
+                            standard_value = float(activity.get('standard_value'))
+                        except (ValueError, TypeError):
+                            continue  # Skip activities with invalid values
+                            
                     processed_activity = {
                         'chembl_id': request.chembl_id,
-                        'target_id': activity.get('target_chembl_id', ''),
+                        'target_id': activity.get('target_id', ''),
                         'activity_type': activity.get('standard_type', ''),
                         'relation': activity.get('standard_relation', '='),
-                        'value': float(activity.get('standard_value', 0)),
+                        'value': standard_value,
                         'units': activity.get('standard_units', '')
                     }
                     processed_activities.append(processed_activity)
-            
             # Cache results
             self._cache_result(cache_key, processed_activities)
             
